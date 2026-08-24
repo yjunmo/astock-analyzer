@@ -1,0 +1,5 @@
+.streamlit/
+__pycache__/
+*.pyc
+.venv/
+启动分析工具.bat
