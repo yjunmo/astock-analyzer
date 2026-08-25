@@ -184,25 +184,40 @@ def _news(code6: str) -> list:
 def _web_search(name: str) -> list:
     """尽力而为的网页检索：优先 DuckDuckGo(ddgs 包)，失败退回 Bing 中文站。"""
     q = f"{name} 股票 最新消息"
-    results: list = []
+    results: list[tuple[str, str, str]] = []  # (标题, 链接, 摘要)
 
-    def _parse_bing() -> list:
-        import requests
-        resp = requests.get(BING_URL.format(q=q), timeout=SEARCH_TIMEOUT,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        import re
-        items = re.findall(
-            r'<li class="b_algo".*?<h2><a[^>]*>(.*?)</a></h2>.*?(?:<p[^>]*>(.*?)</p>)?</li>',
-            resp.text, re.S)
-        clean = lambda s: re.sub(r"<[^>]+>", "", s or "").strip()[:90]  # noqa: E731
-        return [(clean(t), clean(s)) for t, s in items[:SEARCH_LIMIT]]
-
-    try:
-        from ddgs import DDGS  # 可选依赖
+    def _via_ddg():
+        try:
+            from ddgs import DDGS          # 新包名（推荐）
+        except ImportError:
+            from duckduckgo_search import DDGS  # 旧包名兼容
         with DDGS(timeout=SEARCH_TIMEOUT) as dd:
             for r in dd.text(q, max_results=SEARCH_LIMIT):
                 results.append((str(r.get("title", ""))[:90],
+                                str(r.get("href") or r.get("url") or "")[:80],
                                 str(r.get("body", ""))[:120]))
+
+    def _parse_bing() -> list:
+        """Bing 官方 RSS 输出（format=rss），比解析 HTML 结果页稳定且无反爬。"""
+        import re
+        import requests
+        from urllib.parse import quote
+        url = ("https://www.bing.com/search?q=" + quote(q)
+               + "&format=rss&setmkt=zh-CN&count=10")
+        resp = requests.get(url, timeout=SEARCH_TIMEOUT,
+                            headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        items = re.findall(
+            r"<item>\s*<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>\s*"
+            r"<link>(.*?)</link>\s*"
+            r"<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>",
+            resp.text, re.S)
+        strip = lambda s: re.sub(r"<[^>]+>", "", s or "").strip()  # noqa: E731
+        return [(strip(t)[:90], u.strip()[:80], strip(s)[:120])
+                for t, u, s in items[:SEARCH_LIMIT]]
+
+    try:
+        _via_ddg()
     except Exception:
         try:
             results = _parse_bing()
@@ -210,7 +225,17 @@ def _web_search(name: str) -> list:
             return ["- 网页检索不可用（可 pip install ddgs 启用 DuckDuckGo）"]
     if not results:
         return ["- 网页检索无结果"]
-    return [f"- 《{t}》{s}" for t, s in results]
+    # 相关性守卫：标题+摘要均未出现股票名的视为噪声，宁缺毋滥
+    if name:
+        related = [r for r in results if name in r[0] or name in r[2]]
+        if not related:
+            return ["- 网页检索无与该股直接相关的结果"]
+        results = related
+    out = []
+    for title, url, body in results:
+        src = f"（{url}）" if url.startswith("http") else ""
+        out.append(f"- 《{title}》{body}{src}")
+    return out
 
 
 # ---------------------------------------------------------------- 龙虎榜
