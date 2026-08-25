@@ -260,7 +260,20 @@ def _reset_ai_context():
         st.session_state.pop(k, None)
 
 
-def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict, data_key: str):
+def _load_market_ctx(code6: str, name: str) -> str:
+    """拉取市场环境快照（情绪/板块/消息/龙虎榜/北向），失败降级为提示文本。"""
+    if not code6:
+        return ""
+    try:
+        with st.spinner("📡 拉取市场环境数据（涨跌家数/涨停连板/板块/龙虎榜/新闻）…"):
+            from market_context import build_market_context
+            return build_market_context(code6, name)
+    except Exception as e:  # noqa: BLE001
+        return f"（市场环境数据采集失败：{type(e).__name__}: {e}）"
+
+
+def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
+                   data_key: str, code6: str = "", name: str = ""):
     st.divider()
     hcol, bcol = st.columns([3, 1])
     hcol.subheader("🤖 AI 解读（多轮对话）")
@@ -317,7 +330,8 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict, data_key: str
             if effort:
                 extra_params["reasoning_effort"] = effort
             placeholders = build_placeholders(df_all, result, snapshot,
-                                              bars_tail=bars_tail)
+                                              bars_tail=bars_tail,
+                                              market_ctx=_load_market_ctx(code6, name))
             st.session_state["ai_system"] = render_prompt(body, placeholders)
             st.session_state["ai_meta"] = meta
             st.session_state["ai_extra_params"] = extra_params
@@ -532,7 +546,8 @@ def main():
 
     data_key = f"{symbol}|{period}|{adjust}|{int(is_st)}"
     render_skill_editor()
-    render_ai_chat(ai, df_all, result, snap, data_key)
+    render_ai_chat(ai, df_all, result, snap, data_key,
+                   code6=symbol[2:], name=name)
 
     st.divider()
     st.warning("⚠️ 免责声明：本工具输出仅为基于历史数据的技术指标计算结果，不构成任何投资建议。"

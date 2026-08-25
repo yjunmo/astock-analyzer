@@ -20,6 +20,8 @@ reasoning_effort: low    # 可选：low/medium/high/xhigh/max（DeepSeek V4 支�
 {plan}      价位参考卡片（低吸区/目标位/止损等）
 {bars}      尾随K线压缩表（OHLC/涨跌幅/量比/MA5/MA20/DIF/DEA/K/RSI6）
 {snapshot}  实时行情快照
+{market_ctx} 市场环境快照：涨跌家数/涨停连板高度/所属板块/北向资金/
+             龙虎榜统计/个股新闻/网页检索（抓取时点数据，失败项会标注）
 ```
 
 ## 使用方式

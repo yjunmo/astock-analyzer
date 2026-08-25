@@ -81,13 +81,15 @@ def snapshot_text(snapshot: Optional[dict]) -> str:
 
 def build_placeholders(df: pd.DataFrame, report_result: dict,
                        snapshot: Optional[dict] = None,
-                       bars_tail: Optional[int] = None) -> dict:
+                       bars_tail: Optional[int] = None,
+                       market_ctx: str = "") -> dict:
     """组装占位符。bars_tail 可由技能 frontmatter 覆盖（省 token 用）。"""
     return {
         "report": report_result.get("text", ""),
         "plan": plan_lines(report_result),
         "bars": bars_table(df, tail=bars_tail or BARS_TAIL),
         "snapshot": snapshot_text(snapshot),
+        "market_ctx": market_ctx or "（未采集市场环境数据）",
     }
 
 
