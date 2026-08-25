@@ -181,8 +181,39 @@ def _news(code6: str) -> list:
     return out
 
 
+def _detect_proxy() -> str:
+    """探测可用代理：显式环境变量 > Windows 系统代理(IE设置)。返回空串表示直连。
+
+    用于 DuckDuckGo 等外网检索；国内数据源不受影响。
+    """
+    import os
+    for k in ("ASTOCK_SEARCH_PROXY", "HTTPS_PROXY", "https_proxy",
+              "HTTP_PROXY", "http_proxy"):
+        v = os.environ.get(k)
+        if v:
+            return v
+    try:
+        import winreg
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
+        enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
+        if not enabled:
+            return ""
+        server, _ = winreg.QueryValueEx(key, "ProxyServer")
+        server = str(server).strip()
+        if ";" in server and "=" in server:  # 形如 http=...;https=...
+            parts = dict(p.split("=", 1) for p in server.split(";") if "=" in p)
+            server = parts.get("https") or parts.get("http") or ""
+        if server and not server.startswith("http"):
+            server = "http://" + server
+        return server
+    except Exception:
+        return ""
+
+
 def _web_search(name: str) -> list:
-    """尽力而为的网页检索：优先 DuckDuckGo(ddgs 包)，失败退回 Bing 中文站。"""
+    """尽力而为的网页检索：优先 DuckDuckGo(ddgs 包)，失败退回 Bing RSS。"""
     q = f"{name} 股票 最新消息"
     results: list[tuple[str, str, str]] = []  # (标题, 链接, 摘要)
 
@@ -191,7 +222,12 @@ def _web_search(name: str) -> list:
             from ddgs import DDGS          # 新包名（推荐）
         except ImportError:
             from duckduckgo_search import DDGS  # 旧包名兼容
-        with DDGS(timeout=SEARCH_TIMEOUT) as dd:
+        px = _detect_proxy()
+        try:
+            client = DDGS(timeout=SEARCH_TIMEOUT, proxy=px or None)
+        except TypeError:  # 旧版不支持 proxy 参数
+            client = DDGS(timeout=SEARCH_TIMEOUT)
+        with client as dd:
             for r in dd.text(q, max_results=SEARCH_LIMIT):
                 results.append((str(r.get("title", ""))[:90],
                                 str(r.get("href") or r.get("url") or "")[:80],
