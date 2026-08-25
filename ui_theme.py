@@ -7,6 +7,7 @@
 
 本模块只产出 HTML 字符串，不依赖 streamlit/pandas，便于离线单测。
 """
+import html as _html_mod
 
 # ---- 设计令牌 ------------------------------------------------------------
 BG = "#0C1117"
@@ -26,7 +27,17 @@ ACCENT = "#58A6FF"
 WARN = "#F0B429"
 
 TONE_COLOR = {"bull": UP, "bear": DOWN, None: FLAT}
-TONE_LABEL = {"bull": "偏多", "bear": "偏空", None: "中性"}
+
+# signals 模块使用 "bullish"/"bearish"，组件内部用 "bull"/"bear"，此处归一化
+_TONE_ALIAS = {"bull": "bull", "bullish": "bull",
+               "bear": "bear", "bearish": "bear"}
+
+
+def canon_tone(tone):
+    """归一化语气值；未知值一律视为中性(None)。"""
+    if tone is None:
+        return None
+    return _TONE_ALIAS.get(str(tone))
 
 FONT_SANS = ('-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif')
 FONT_NUM = ('"JetBrains Mono","SF Mono",Consolas,"Courier New",monospace')
@@ -47,7 +58,11 @@ def apply_global_css() -> str:
 section[data-testid="stSidebar"] {{
   background:#10151C; border-right:1px solid var(--border);
 }}
-.block-container {{ padding:1rem 1.4rem 2rem; max-width:1440px; }}
+.block-container {{ padding:2.4rem 1.4rem 2rem; max-width:1440px; }}
+/* Streamlit 固定头部为半透明，避免遮挡首行内容 */
+header[data-testid="stHeader"] {{
+  background:rgba(12,17,23,.55); backdrop-filter:blur(6px);
+}}
 h1,h2,h3,.stMarkdown,.stText,.stDataFrame {{ color:var(--text); }}
 #MainMenu,footer,[data-testid="stStatusWidget"] {{ visibility:hidden; }}
 
@@ -65,15 +80,15 @@ h1,h2,h3,.stMarkdown,.stText,.stDataFrame {{ color:var(--text); }}
 .card:hover {{ border-color:var(--border-h); transform:translateY(-1px); }}
 
 /* ---- 顶部行情概览 ---- */
-.hero {{ display:flex; gap:18px; align-items:center;
+.hero {{ display:flex; gap:18px; align-items:center; flex-wrap:wrap;
   background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%);
   border:1px solid var(--border); border-radius:14px; padding:14px 20px; }}
 .hero .idbox .name {{ font-size:20px; font-weight:700; color:var(--text);
   line-height:1.2; white-space:nowrap; }}
 .hero .idbox .code {{ font-size:13px; color:var(--dim);
   font-family:{FONT_NUM}; margin-top:2px; white-space:nowrap; }}
-.hero .price {{ font-size:42px; font-weight:700; line-height:1;
-  font-family:{FONT_NUM}; font-variant-numeric:tabular-nums; }}
+.hero .price {{ font-size:clamp(30px,3.2vw,42px); font-weight:700; line-height:1;
+  font-family:{FONT_NUM}; font-variant-numeric:tabular-nums; white-space:nowrap; }}
 .chg {{ display:inline-flex; align-items:baseline; gap:8px;
   font-family:{FONT_NUM}; font-size:15px; font-weight:600;
   padding:3px 10px; border-radius:8px; margin-top:4px; }}
@@ -148,22 +163,35 @@ h1,h2,h3,.stMarkdown,.stText,.stDataFrame {{ color:var(--text); }}
 /* ---- 价位参考 ---- */
 .pxcard {{ text-align:left; }}
 .pxcard .val {{ font-size:16px; font-weight:600; }}
+
+/* ---- 窄屏适配 ---- */
+@media (max-width: 860px) {{
+  .hero {{ gap:12px; padding:12px 14px; }}
+  .ohlc {{ gap:10px; }}
+  .hero .idbox .name {{ font-size:17px; }}
+}}
 </style>
 """
 
 
+def esc(v) -> str:
+    """HTML 转义：信号文本含 '<' '>'（如 MA5<MA20）时防止被当作标签解析。"""
+    return _html_mod.escape(str(v), quote=False)
+
+
 def _tone_cls(tone) -> str:
-    return {"bull": "bull", "bear": "bear"}.get(tone, "flat")
+    c = canon_tone(tone)
+    return {None: "flat", "bull": "bull", "bear": "bear"}[c]
 
 
 def tone_color(tone) -> str:
-    return TONE_COLOR.get(tone, FLAT)
+    return TONE_COLOR.get(canon_tone(tone), FLAT)
 
 
 def sec_header(title: str, hint: str = "") -> str:
-    hint_html = f'<span class="hint">{hint}</span>' if hint else ""
+    hint_html = f'<span class="hint">{esc(hint)}</span>' if hint else ""
     return (f'<div class="sec"><div class="bar"></div>'
-            f'<div class="t">{title}</div>{hint_html}</div>')
+            f'<div class="t">{esc(title)}</div>{hint_html}</div>')
 
 
 def hero(name: str, symbol_disp: str, badges: list,
@@ -174,19 +202,19 @@ def hero(name: str, symbol_disp: str, badges: list,
     sign = "+" if chg_pct > 0 else ""
     chg_abs = price - prev_price
     src = "实时快照" if not closed_only else "收盘价"
-    badges_html = "".join(f'<span class="badge">{b}</span>' for b in badges)
+    badges_html = "".join(f'<span class="badge">{esc(b)}</span>' for b in badges)
 
     def it(label, value):
-        return (f'<div class="it"><div class="lbl">{label}</div>'
-                f'<div class="val">{value}</div></div>')
+        return (f'<div class="it"><div class="lbl">{esc(label)}</div>'
+                f'<div class="val">{esc(value)}</div></div>')
 
     ohlc_html = "".join(it(k, v) for k, v in ohlc.items())
     arrow = "▲" if chg_pct > 0 else ("▼" if chg_pct < 0 else "—")
     return f"""
 <div class="hero">
   <div class="idbox">
-    <div class="name">{name}</div>
-    <div class="code">{symbol_disp}</div>
+    <div class="name">{esc(name)}</div>
+    <div class="code">{esc(symbol_disp)}</div>
     <div style="margin-top:6px;display:flex;gap:6px;flex-wrap:wrap">{badges_html}</div>
   </div>
   <div style="flex:none">
@@ -197,7 +225,7 @@ def hero(name: str, symbol_disp: str, badges: list,
     <span class="chg {direction}">{arrow} {sign}{chg_abs:.2f} ({sign}{chg_pct:.2f}%)</span>
   </div>
   <div style="margin-left:auto"><div class="ohlc">{ohlc_html}
-    <div class="it"><div class="lbl">数据时点</div><div class="ts">{ts}</div></div>
+    <div class="it"><div class="lbl">数据时点</div><div class="ts">{esc(ts)}</div></div>
   </div></div>
 </div>"""
 
@@ -206,24 +234,24 @@ def verdict_banner(verdict: str, tone, bull: int, bear: int, ops: str) -> str:
     """AI 综合结论横幅：一级信息。tone 决定左侧色条与文字色。"""
     c = tone_color(tone)
     tint = {"bull": "rgba(255,93,93,.08)", "bear": "rgba(38,194,129,.08)",
-            None: "rgba(147,161,175,.06)"}[tone]
+            None: "rgba(147,161,175,.06)"}[canon_tone(tone)]
     conf = max(bull, bear) / max(bull + bear, 1)
     return f"""
 <div class="banner" style="--tone:{c};--tint:{tint}">
   <div class="head">
     <span class="badge">AI 综合评估</span>
-    <span class="verdict">{verdict}</span>
+    <span class="verdict">{esc(verdict)}</span>
     <span class="score">多空组别比 {bull}:{bear} · 置信参考 {conf * 100:.0f}%</span>
   </div>
-  <div class="ops">{ops}</div>
+  <div class="ops">{esc(ops)}</div>
 </div>"""
 
 
 def kpi(label: str, value: str, sub: str = "", cls: str = "") -> str:
     """二级信息 KPI 卡片：label 小字灰、value 等宽大数、sub 辅助说明。"""
-    return (f'<div class="card kpi {cls}"><div class="lbl">{label}</div>'
-            f'<div class="val num">{value}</div>'
-            + (f'<div class="sub">{sub}</div>' if sub else "")
+    return (f'<div class="card kpi {cls}"><div class="lbl">{esc(label)}</div>'
+            f'<div class="val num">{esc(value)}</div>'
+            + (f'<div class="sub">{esc(sub)}</div>' if sub else "")
             + "</div>")
 
 
@@ -235,24 +263,25 @@ def grp_chip(title: str, bull: int, bear: int) -> str:
     else:
         c, dot = FLAT, FLAT
     return (f'<span class="grp-chip"><span class="dot" '
-            f'style="background:{dot}"></span>{title}'
+            f'style="background:{dot}"></span>{esc(title)}'
             f'&nbsp;<span class="num" style="color:{c}">{bull}:{bear}</span></span>')
 
 
 def sig_group(title: str, items: list) -> str:
     """一组信号条目：▲偏多 ▼偏空 — 中性，悬停高亮。"""
-    out = [f'<div class="grp">{title}</div>']
+    out = [f'<div class="grp">{esc(title)}</div>']
     for text, status in items:
-        mk = {"bull": "▲", "bear": "▼"}.get(status, "—")
+        mk = {"bull": "▲", "bear": "▼"}.get(status if status in ("bull", "bear")
+                                             else _tone_cls(status), "—")
         out.append(f'<div class="sig {_tone_cls(status)}">'
-                   f'<span class="mk">{mk}</span><span class="tx">{text}</span></div>')
+                   f'<span class="mk">{mk}</span><span class="tx">{esc(text)}</span></div>')
     return "".join(out)
 
 
 def risk_panel(level: str, reasons: list) -> str:
     """风险提示面板：level ∈ 高/中/低。"""
     lv_cls = {"高": "lv-high", "中": "lv-mid", "低": "lv-low"}.get(level, "lv-mid")
-    lis = "".join(f"<li>{r}</li>" for r in reasons)
+    lis = "".join(f"<li>{esc(r)}</li>" for r in reasons)
     return (f'<div class="risk"><div class="hd"><span>⚠️ 风险提示</span>'
-            f'<span class="lv {lv_cls}">{level}风险</span></div>'
+            f'<span class="lv {lv_cls}">{esc(level)}风险</span></div>'
             f"<ul>{lis}</ul></div>")
