@@ -10,9 +10,10 @@ import streamlit as st
 
 import data_fetcher as dtf
 from indicators import compute_all
-from report import BULL, BEAR, build_report, tone_color
+from report import BULL, BEAR, build_report
 
 import skill_store
+import ui_theme as ut
 from ai_client import (AIError, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
                        PROVIDERS, chat_complete, clear_local_config,
                        load_local_config, save_local_config)
@@ -20,8 +21,8 @@ from ai_context import build_placeholders, parse_frontmatter, render_prompt
 
 st.set_page_config(page_title="A股技术分析工具", page_icon="📈", layout="wide")
 
-UP = "#e74c3c"
-DOWN = "#27ae60"
+UP = ut.UP
+DOWN = ut.DOWN
 
 _MA_COLORS = {
     "ma5": "#f39c12",
@@ -98,11 +99,22 @@ def make_figure(df: pd.DataFrame) -> go.Figure:
         fig.add_hline(y=level, line=dict(width=0.8, color="#bdc3c7", dash="dash"), row=5, col=1)
 
     fig.update_layout(
-        height=1080, template="plotly_white",
-        legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0),
-        margin=dict(l=10, r=10, t=40, b=10),
+        height=1080,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=ut.FONT_SANS.replace("'", '"'), size=11.5, color=ut.TEXT_DIM),
+        hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+        margin=dict(l=8, r=14, t=34, b=6),
     )
-    fig.update_xaxes(type="category", rangeslider_visible=False)
+    fig.update_xaxes(type="category", rangeslider_visible=False,
+                     gridcolor="#20262E", linecolor="#2C3640",
+                     tickfont=dict(size=10.5))
+    fig.update_yaxes(gridcolor="#20262E", zerolinecolor="#2C3640",
+                     tickfont=dict(size=10.5), fixedrange=False)
+    # 各子图纵轴单位标注
+    fig.update_yaxes(title_text="价格 (元)", row=1, col=1)
+    fig.update_yaxes(title_text="成交量", row=2, col=1)
     return fig
 
 
@@ -419,9 +431,75 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
         st.error(f"AI 调用失败：{e}")
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def fetch_spot_extra(code6: str) -> dict:
+    """东财盘口快照中的估值字段（市盈率/市净率/市值等）。失败返回空 dict。"""
+    try:
+        import akshare as ak
+        df = ak.stock_bid_ask_em(symbol=code6)
+        return dict(zip(df["item"].astype(str), df["value"]))
+    except Exception:
+        return {}
+
+
+def _pick_val(d: dict, *keywords):
+    for k, v in d.items():
+        if any(w in str(k) for w in keywords):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def _fmt_amt(v):
+    if v is None:
+        return "--"
+    if abs(v) >= 1e8:
+        return f"{v / 1e8:.0f} 亿"
+    if abs(v) >= 1e4:
+        return f"{v / 1e4:.0f} 万"
+    return f"{v:.0f}"
+
+
+def derive_risk(result: dict, s: dict, df_all: pd.DataFrame,
+                limit_up: bool, limit_down: bool):
+    """风险等级与依据清单：仅引用已计算的事实，不引入新判断。"""
+    reasons = []
+    if limit_down:
+        reasons.append("最新K线收于跌停——卖出可能无法成交，流动性风险")
+    if limit_up:
+        reasons.append("最新K线收于涨停——买入信号当日不可成交，次日存在高开回落风险")
+
+    bull, bear = s["bull"], s["bear"]
+    if bull + bear == 0:
+        reasons.append("有效信号组不足，当前方向性判断可靠性较低")
+        level = "中"
+    else:
+        if bear > bull:
+            reasons.insert(0, f"指标组投票空方占优（空 {bear} : 多 {bull}）")
+            level = "高" if bear >= 3 else "中"
+        elif bull > bear:
+            reasons.insert(0, f"指标组投票多方占优（多 {bull} : 空 {bear}）")
+            level = "低" if bull >= 3 else "中"
+        else:
+            reasons.insert(0, f"多空组别持平（{bull}:{bear}），方向选择待确认")
+            level = "中"
+        for kw in ("超买", "跌破布林下轨", "缩量阴跌"):
+            for g in result["groups"]:
+                for txt, st_ in g["items"]:
+                    if kw in txt:
+                        reasons.append(f"[{g['name'].split(' ')[0]}] {txt}")
+                        break
+                else:
+                    continue
+                break
+    reasons = reasons[:6]
+    return level, reasons
+
+
 def main():
-    st.title("📈 A股个股技术分析")
-    st.caption("数据来源：新浪财经 / 腾讯证券（经 akshare 接口）· 仅供学习研究，不构成任何投资建议")
+    st.markdown(ut.apply_global_css(), unsafe_allow_html=True)
 
     code, period, adjust, n_bars, run = render_sidebar()
     ai = render_ai_settings()
@@ -462,87 +540,136 @@ def main():
     df = df_all.tail(n_bars).reset_index(drop=True)
 
     suffix = {"sh": "SH", "sz": "SZ"}.get(symbol[:2], "BJ")
-    adjust_label = {"qfq": "前复权", "hfq": "后复权", "": "不复权"}[adjust]
+    symbol_disp = f"{symbol[2:]}.{suffix}"
     period_label = "日线" if period == "daily" else "周线"
-    st.subheader(f"{name} · {symbol[2:]}.{suffix}")
-    st.caption(
-        f"周期：{period_label} · 复权：{adjust_label} · 共 {len(df_all)} 个已收盘周期"
-        " · 未收盘K线已剔除 · 涨跌停按不复权价判断（除权除息日基准价未调整，或有偏差）"
-    )
+    adjust_label = {"qfq": "前复权", "hfq": "后复权", "": "不复权"}[adjust]
 
-    if snap and snap.get("price"):
-        chg_pct = (snap["price"] / snap["prev_close"] - 1) * 100 if snap["prev_close"] else 0.0
-        m = st.columns(6)
-        m[0].metric("最新价", f"{snap['price']:.2f}", f"{chg_pct:+.2f}%")
-        m[1].metric("今开", f"{snap['open']:.2f}")
-        m[2].metric("昨收", f"{snap['prev_close']:.2f}")
-        m[3].metric("最高", f"{snap['high']:.2f}")
-        m[4].metric("最低", f"{snap['low']:.2f}")
-        m[5].metric("快照时间", snap.get("time", "-"))
+    # ---------- 一、顶部行情概览栏（一级信息） ----------
+    last_close = float(df_all["close"].iloc[-1])
+    prev_close = float(df_all["close"].iloc[-2])
+    use_rt = bool(snap and snap.get("price"))
+    price = float(snap["price"]) if use_rt else last_close
+    prev_ref = float(snap["prev_close"] or prev_close) if use_rt else prev_close
+    chg_pct = (price / prev_ref - 1) * 100 if prev_ref else 0.0
+    if use_rt:
+        ohlc = {"今开": f"{snap['open']:.2f}", "最高": f"{snap['high']:.2f}",
+                "最低": f"{snap['low']:.2f}", "昨收": f"{snap['prev_close']:.2f}",
+                "成交额": _fmt_amt(snap.get("amount"))}
+        ts = f"{snap.get('date', '')} {snap.get('time', '')}".strip()
+    else:
+        r = df_all.iloc[-1]
+        ohlc = {"今开": f"{r['open']:.2f}", "最高": f"{r['high']:.2f}",
+                "最低": f"{r['low']:.2f}", "昨收": f"{prev_close:.2f}"}
+        ts = pd.Timestamp(r["date"]).strftime("%Y-%m-%d 收盘")
 
-    result = build_report(df_all, name=name, symbol=f"{symbol[2:]}.{suffix}", period=period)
+    badges = [period_label, adjust_label, f"共{len(df_all)}个已收盘周期"]
+    if is_st:
+        badges.append("ST")
+    badges.append("涨跌停按不复权价·除权日或有偏差")
+    st.markdown(ut.hero(
+        name=name, symbol_disp=symbol_disp, badges=badges,
+        price=price, chg_pct=chg_pct, prev_price=prev_ref,
+        ohlc=ohlc, ts=ts, closed_only=not use_rt,
+    ), unsafe_allow_html=True)
+    st.caption("数据来源：新浪财经 / 腾讯证券（经 akshare 接口）· 技术指标为通达信口径 · "
+               "仅供学习研究，不构成任何投资建议")
+
+    result = build_report(df_all, name=name, symbol=symbol_disp, period=period)
     s = result["score"]
 
-    top = st.columns([1, 1, 2.2])
-    top[0].markdown(
-        f"""<div style="padding:14px;border-radius:10px;background:{tone_color(s['tone'])};
-        color:#fff;text-align:center"><div style="font-size:13px;opacity:.85">多空组别比</div>
-        <div style="font-size:26px;font-weight:700">{s['bull']} : {s['bear']}</div>
-        <div style="font-size:14px">{s['verdict']}</div></div>""",
-        unsafe_allow_html=True,
-    )
-    last_close = df_all["close"].iloc[-1]
-    prev_close_hist = df_all["close"].iloc[-2]
-    hist_chg = (last_close / prev_close_hist - 1) * 100
-    top[1].markdown(
-        f"""<div style="padding:14px;border-radius:10px;background:#ecf0f1;text-align:center">
-        <div style="font-size:13px;color:#7f8c8d">最新收盘（{'日' if period == 'daily' else '周'}线）</div>
-        <div style="font-size:26px;font-weight:700">{last_close:.2f}</div>
-        <div style="font-size:13px;color:#7f8c8d">{pd.Timestamp(df_all['date'].iloc[-1]).strftime('%Y-%m-%d')}
-        {'▲' if hist_chg >= 0 else '▼'}{abs(hist_chg):.2f}%</div></div>""",
-        unsafe_allow_html=True,
-    )
+    # ---------- 二、AI 综合结论横幅（一级信息） ----------
+    ops = ("操作提示：A股 T+1，信号按已收盘K线计，最早下一交易日开盘关注；"
+           "空头仅指减仓/回避，不假设可做空。")
+    st.markdown(ut.verdict_banner(s["verdict"], s["tone"], s["bull"], s["bear"], ops),
+                unsafe_allow_html=True)
 
-    chips = []
-    for g in result["groups"]:
-        bull_n = sum(1 for _, t in g["items"] if t == BULL)
-        bear_n = sum(1 for _, t in g["items"] if t == BEAR)
-        if bull_n > bear_n:
-            color, mark = "#e74c3c", "▲"
-        elif bear_n > bull_n:
-            color, mark = "#27ae60", "▼"
-        else:
-            color, mark = "#7f8c8d", "—"
-        chips.append(
-            f'<span style="display:inline-block;margin:3px;padding:6px 12px;border-radius:16px;'
-            f'background:#fff;border:1.5px solid {color};color:{color};font-size:13px">'
-            f'{mark} {g["name"].split(" ")[0]}</span>'
-        )
-    top[2].markdown(
-        '<div style="padding-top:6px">' + "".join(chips) + "</div>",
-        unsafe_allow_html=True,
-    )
+    # ---------- 三、关键指标卡片区（二级信息） ----------
+    st.markdown(ut.sec_header("关键指标", "技术面派生 + 东财估值快照；'--' 表示数据缺失"),
+                unsafe_allow_html=True)
+    extras = fetch_spot_extra(symbol[2:])
+    close = last_close
+    cards = []
 
+    turnover = _pick_val(extras, "换手率")
+    if turnover is None and "turnover" in df_all.columns:
+        t_last = df_all["turnover"].iloc[-1]
+        turnover = float(t_last) if pd.notna(t_last) else None
+    cards.append(("换手率", f"{turnover:.2f}%" if turnover is not None else "--",
+                  "活跃" if (turnover or 0) > 5 else ("温和" if (turnover or 0) > 1.5 else "低迷")))
+
+    vr = df_all["vol_ratio"].iloc[-1]
+    vr = float(vr) if pd.notna(vr) else None
+    cards.append(("量比", f"{vr:.2f}" if vr is not None else "--",
+                  "放量" if (vr or 0) >= 1.2 else ("平量" if (vr or 0) >= 0.8 else "缩量")))
+
+    if "atr" in df_all.columns and pd.notna(df_all["atr"].iloc[-1]):
+        atr = float(df_all["atr"].iloc[-1])
+        cards.append(("ATR(14)", f"{atr:.2f}", f"占现价 {atr / close * 100:.1f}%"))
+
+    pct = df_all["close"].pct_change().tail(21)
+    if len(pct.dropna()) >= 10:
+        vol20 = pct.std() * (242 ** 0.5) * 100
+        cards.append(("20日年化波动率", f"{vol20:.0f}%",
+                      "高于30%注意仓位控制" if vol20 > 30 else ""))
+
+    win = min(len(df_all), 250)
+    hi = float(df_all["close"].tail(win).max())
+    dd = (close / hi - 1) * 100
+    cls = "neg" if dd < -15 else ""
+    cards.append((f"{win}日高点回撤", f"{dd:+.1f}%", f"阶段高点 {hi:.2f}", cls))
+
+    pe = _pick_val(extras, "市盈率")
+    pb = _pick_val(extras, "市净率")
+    mcap = _pick_val(extras, "总市值")
+    cards.append(("市盈率(动)", f"{pe:.1f}" if pe is not None else "--", ""))
+    cards.append(("市净率", f"{pb:.2f}" if pb is not None else "--", ""))
+    cards.append(("总市值", _fmt_amt(mcap) if mcap is not None else "--", ""))
+
+    kc = st.columns(len(cards))
+    for col, (label, value, sub, *rest) in zip(kc, cards):
+        cls = rest[0] if rest else ""
+        col.markdown(ut.kpi(label, value, sub, cls), unsafe_allow_html=True)
+
+    # ---------- 四、技术图表区 ----------
+    st.markdown(ut.sec_header("技术图表", "K线/均线/布林 · 成交量 · MACD · KDJ · RSI"),
+                unsafe_allow_html=True)
+    st.plotly_chart(make_figure(df), use_container_width=True)
+
+    # ---------- 五、AI 信号与风险提示区 ----------
     plan = result.get("plan")
-    if plan and plan.get("cards"):
-        st.subheader("🎯 价位参考")
-        cols = st.columns(len(plan["cards"]))
-        for col, (label, value) in zip(cols, plan["cards"]):
-            col.metric(label, value)
-        st.caption(plan["note"])
-
-    st.plotly_chart(make_figure(df))
-
-    left, right = st.columns([1.3, 1])
+    left, right = st.columns([1.35, 1])
     with left:
-        st.subheader("📋 指标解读与综合评估")
-        st.text(result["text"])
+        st.markdown(ut.sec_header("AI 信号明细", "五大指标组 · 每组一票"),
+                    unsafe_allow_html=True)
+        chips = "".join(
+            ut.grp_chip(g["name"].split(" ")[0],
+                        sum(1 for _, t in g["items"] if t == BULL),
+                        sum(1 for _, t in g["items"] if t == BEAR))
+            for g in result["groups"])
+        st.markdown('<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px">'
+                    + chips + "</div>", unsafe_allow_html=True)
+        for g in result["groups"]:
+            st.markdown(ut.sig_group(g["name"], g["items"]), unsafe_allow_html=True)
     with right:
-        st.subheader("🔔 近期交叉信号")
+        limit_up = bool(df_all["is_limit_up"].iloc[-1]) if "is_limit_up" in df_all.columns else False
+        limit_dn = bool(df_all["is_limit_down"].iloc[-1]) if "is_limit_down" in df_all.columns else False
+        level, reasons = derive_risk(result, s, df_all, limit_up, limit_dn)
+        st.markdown(ut.risk_panel(level, reasons), unsafe_allow_html=True)
+
+        if plan and plan.get("cards"):
+            st.markdown(ut.sec_header("价位参考", "近端支撑压力 + ATR 缓冲推算"),
+                        unsafe_allow_html=True)
+            pc = st.columns(min(len(plan["cards"]), 3))
+            for i, (label, value) in enumerate(plan["cards"]):
+                pc[i % len(pc)].markdown(
+                    ut.kpi(label, value, cls="pxcard"), unsafe_allow_html=True)
+            st.caption(plan["note"])
+
+        st.markdown(ut.sec_header("近期交叉事件", "近15个周期"), unsafe_allow_html=True)
         if result["events"].empty:
-            st.info("近15个周期内无均线/MACD/KDJ交叉信号")
+            st.info("近15个周期内无均线/MACD/KDJ交叉信号", icon="ℹ️")
         else:
-            st.dataframe(result["events"], hide_index=True)
+            st.dataframe(result["events"], hide_index=True, height=220)
 
     data_key = f"{symbol}|{period}|{adjust}|{int(is_st)}"
     render_skill_editor()
@@ -550,8 +677,8 @@ def main():
                    code6=symbol[2:], name=name)
 
     st.divider()
-    st.warning("⚠️ 免责声明：本工具输出仅为基于历史数据的技术指标计算结果，不构成任何投资建议。"
-               "股市有风险，入市需谨慎。")
+    st.caption("⚠️ 免责声明：本工具输出仅为基于历史数据的技术指标计算结果与模型推演，"
+               "不构成任何投资建议。股市有风险，入市需谨慎。")
 
 
 if __name__ == "__main__":
