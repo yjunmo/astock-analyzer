@@ -101,17 +101,17 @@ def make_figure(df: pd.DataFrame) -> go.Figure:
     fig.update_layout(
         height=1080,
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family=ut.FONT_SANS.replace("'", '"'), size=11.5, color=ut.TEXT_DIM),
+        font=dict(family=ut.FONT_SANS.replace("'", '"'), size=13, color=ut.TEXT_DIM),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.01, x=0,
-                    bgcolor="rgba(0,0,0,0)", font=dict(size=11)),
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=12.5)),
         margin=dict(l=8, r=14, t=34, b=6),
     )
     fig.update_xaxes(type="category", rangeslider_visible=False,
                      gridcolor="#20262E", linecolor="#2C3640",
-                     tickfont=dict(size=10.5))
+                     tickfont=dict(size=12))
     fig.update_yaxes(gridcolor="#20262E", zerolinecolor="#2C3640",
-                     tickfont=dict(size=10.5), fixedrange=False)
+                     tickfont=dict(size=12), fixedrange=False)
     # 各子图纵轴单位标注
     fig.update_yaxes(title_text="价格 (元)", row=1, col=1)
     fig.update_yaxes(title_text="成交量", row=2, col=1)

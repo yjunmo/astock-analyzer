@@ -54,7 +54,7 @@ def apply_global_css() -> str:
   --up:{UP}; --down:{DOWN}; --flat:{FLAT};
   --accent:{ACCENT}; --warn:{WARN};
 }}
-.stApp {{ background:{BG}; }}
+.stApp {{ background:{BG}; font-size:16px; }}
 section[data-testid="stSidebar"] {{
   background:#10151C; border-right:1px solid var(--border);
 }}
@@ -63,7 +63,11 @@ section[data-testid="stSidebar"] {{
 header[data-testid="stHeader"] {{
   background:rgba(12,17,23,.55); backdrop-filter:blur(6px);
 }}
-h1,h2,h3,.stMarkdown,.stText,.stDataFrame {{ color:var(--text); }}
+h1,h2,h3 {{ color:var(--text); }}
+h3 {{ font-size:1.35rem !important; }}
+.stMarkdown, .stText, p, li, [data-testid="stMarkdownContainer"] p {{
+  color:var(--text); font-size:1.02rem;
+}}
 #MainMenu,footer,[data-testid="stStatusWidget"] {{ visibility:hidden; }}
 
 .num, .stMetric, [data-testid="stMetricValue"] {{
@@ -83,26 +87,26 @@ h1,h2,h3,.stMarkdown,.stText,.stDataFrame {{ color:var(--text); }}
 .hero {{ display:flex; gap:18px; align-items:center; flex-wrap:wrap;
   background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%);
   border:1px solid var(--border); border-radius:14px; padding:14px 20px; }}
-.hero .idbox .name {{ font-size:20px; font-weight:700; color:var(--text);
+.hero .idbox .name {{ font-size:23px; font-weight:700; color:var(--text);
   line-height:1.2; white-space:nowrap; }}
-.hero .idbox .code {{ font-size:13px; color:var(--dim);
+.hero .idbox .code {{ font-size:14.5px; color:var(--dim);
   font-family:{FONT_NUM}; margin-top:2px; white-space:nowrap; }}
-.hero .price {{ font-size:clamp(30px,3.2vw,42px); font-weight:700; line-height:1;
+.hero .price {{ font-size:clamp(34px,3.8vw,50px); font-weight:700; line-height:1;
   font-family:{FONT_NUM}; font-variant-numeric:tabular-nums; white-space:nowrap; }}
 .chg {{ display:inline-flex; align-items:baseline; gap:8px;
-  font-family:{FONT_NUM}; font-size:15px; font-weight:600;
-  padding:3px 10px; border-radius:8px; margin-top:4px; }}
+  font-family:{FONT_NUM}; font-size:17px; font-weight:600;
+  padding:4px 12px; border-radius:8px; margin-top:4px; }}
 .chg.up   {{ color:var(--up);   background:rgba(255,93,93,.10); }}
 .chg.down {{ color:var(--down); background:rgba(38,194,129,.10); }}
 .chg.flat {{ color:var(--flat); background:rgba(147,161,175,.10); }}
-.ohlc {{ display:flex; gap:16px; flex-wrap:wrap; }}
-.ohlc .it {{ min-width:64px; }}
-.lbl {{ font-size:11px; color:var(--faint); letter-spacing:.06em; }}
-.val {{ font-size:14px; color:var(--text); font-family:{FONT_NUM};
+.ohlc {{ display:flex; gap:18px; flex-wrap:wrap; }}
+.ohlc .it {{ min-width:68px; }}
+.lbl {{ font-size:12.5px; color:var(--faint); letter-spacing:.05em; }}
+.val {{ font-size:16px; color:var(--text); font-family:{FONT_NUM};
   font-variant-numeric:tabular-nums; }}
-.badge {{ font-size:11px; color:var(--dim); border:1px solid var(--border);
-  border-radius:999px; padding:2px 9px; white-space:nowrap; }}
-.ts {{ font-size:11px; color:var(--faint); font-family:{FONT_NUM}; }}
+.badge {{ font-size:12px; color:var(--dim); border:1px solid var(--border);
+  border-radius:999px; padding:2.5px 10px; white-space:nowrap; }}
+.ts {{ font-size:12.5px; color:var(--faint); font-family:{FONT_NUM}; }}
 
 /* ---- 结论横幅 ---- */
 .banner {{ border:1px solid var(--border); border-left-width:4px;
@@ -110,14 +114,14 @@ h1,h2,h3,.stMarkdown,.stText,.stDataFrame {{ color:var(--text); }}
   background:linear-gradient(90deg,var(--tint) 0%,transparent 55%),
              var(--panel); }}
 .banner .head {{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }}
-.banner .verdict {{ font-size:17px; font-weight:700; color:var(--tone); }}
-.banner .score {{ font-family:{FONT_NUM}; font-size:13px; color:var(--dim); }}
-.banner .ops  {{ font-size:12.5px; color:var(--dim); margin-top:6px; }}
+.banner .verdict {{ font-size:20px; font-weight:700; color:var(--tone); }}
+.banner .score {{ font-family:{FONT_NUM}; font-size:14.5px; color:var(--dim); }}
+.banner .ops  {{ font-size:14px; color:var(--dim); margin-top:6px; }}
 
 /* ---- KPI 卡片 ---- */
 .kpi .lbl {{ margin-bottom:4px; }}
-.kpi .val {{ font-size:19px; font-weight:600; }}
-.kpi .sub {{ font-size:11px; color:var(--faint); margin-top:3px;
+.kpi .val {{ font-size:22px; font-weight:600; }}
+.kpi .sub {{ font-size:12.5px; color:var(--faint); margin-top:3px;
   font-family:{FONT_NUM}; }}
 .kpi.pos .val {{ color:var(--up); }}
 .kpi.neg .val {{ color:var(--down); }}
@@ -131,38 +135,38 @@ h1,h2,h3,.stMarkdown,.stText,.stDataFrame {{ color:var(--text); }}
 .sig.bull .mk, .sig.bull .tag {{ color:var(--up); }}
 .sig.bear .mk, .sig.bear .tag {{ color:var(--down); }}
 .sig.flat .mk, .sig.flat .tag {{ color:var(--flat); }}
-.sig .tx {{ font-size:13px; color:var(--text); line-height:1.45; }}
-.sig .grp {{ font-size:12px; font-weight:700; color:var(--dim);
+.sig .tx {{ font-size:14.5px; color:var(--text); line-height:1.5; }}
+.sig .grp {{ font-size:13.5px; font-weight:700; color:var(--dim);
   margin:10px 0 2px; letter-spacing:.03em; }}
 .grp-chip {{ display:inline-flex; gap:6px; align-items:center;
-  font-size:12px; padding:3px 10px; border-radius:999px;
+  font-size:13px; padding:3.5px 11px; border-radius:999px;
   border:1px solid var(--border); background:var(--panel); color:var(--dim); }}
 .dot {{ width:8px; height:8px; border-radius:50%; }}
 
 /* ---- 风险面板 ---- */
 .risk {{ border:1px solid var(--border); border-radius:12px;
   background:var(--panel); overflow:hidden; }}
-.risk .hd {{ padding:9px 14px; font-size:13px; font-weight:700;
+.risk .hd {{ padding:10px 14px; font-size:14.5px; font-weight:700;
   color:var(--text); background:var(--panel2);
   border-bottom:1px solid var(--border);
   display:flex; justify-content:space-between; align-items:center; }}
-.risk .lv {{ font-size:12px; font-weight:700; padding:2px 10px;
+.risk .lv {{ font-size:13px; font-weight:700; padding:2.5px 11px;
   border-radius:999px; }}
 .risk.lv-high {{ color:#FF8A8A; background:rgba(255,93,93,.12); }}
 .risk.lv-mid  {{ color:var(--warn); background:rgba(240,180,41,.12); }}
 .risk.lv-low  {{ color:var(--accent); background:rgba(88,166,255,.12); }}
 .risk ul {{ margin:0; padding:10px 14px 12px 30px; }}
-.risk li {{ font-size:12.5px; color:var(--dim); line-height:1.7; }}
+.risk li {{ font-size:14px; color:var(--dim); line-height:1.75; }}
 
 /* ---- 区块标题 ---- */
-.sec {{ display:flex; align-items:center; gap:8px; margin:18px 0 8px; }}
-.sec .bar {{ width:3px; height:15px; border-radius:2px; background:var(--accent); }}
-.sec .t {{ font-size:14.5px; font-weight:700; color:var(--text); }}
-.sec .hint {{ font-size:11.5px; color:var(--faint); }}
+.sec {{ display:flex; align-items:center; gap:8px; margin:20px 0 9px; }}
+.sec .bar {{ width:3.5px; height:17px; border-radius:2px; background:var(--accent); }}
+.sec .t {{ font-size:16.5px; font-weight:700; color:var(--text); }}
+.sec .hint {{ font-size:13px; color:var(--faint); }}
 
 /* ---- 价位参考 ---- */
 .pxcard {{ text-align:left; }}
-.pxcard .val {{ font-size:16px; font-weight:600; }}
+.pxcard .val {{ font-size:18px; font-weight:600; }}
 
 /* ---- 窄屏适配 ---- */
 @media (max-width: 860px) {{
