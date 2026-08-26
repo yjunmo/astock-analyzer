@@ -141,12 +141,23 @@ def _via_bing_rss(query: str) -> list:
 
 
 def search_raw(query: str, timelimit: str = "w") -> list:
-    """检索原始三元组列表 (标题, url, 摘要)；双引擎均失败时抛 RuntimeError。"""
+    """检索原始三元组列表 (标题, url, 摘要)。
+
+    DuckDuckGo 抛错或返回空时回退 Bing RSS；双引擎均失败抛 RuntimeError。
+    """
     tl = _TL_MAP.get(timelimit, timelimit)
+    rows = []
+    ddg_failed = False
     try:
         rows = _via_ddg(query, tl or "w")
     except Exception:
-        rows = _via_bing_rss(query)
+        ddg_failed = True
+    if not rows:
+        try:
+            rows = _via_bing_rss(query)
+        except Exception as e:
+            if ddg_failed:
+                raise RuntimeError(f"ddg与bing均无结果: {e}") from e
     # 去重（按 URL）
     seen, uniq = set(), []
     for t, u, b in rows:

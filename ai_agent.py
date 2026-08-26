@@ -40,7 +40,8 @@ AGENT_SYSTEM_NOTE = (
 def run_agent(provider_cfg: dict, model: str, api_key: str,
               messages: list, extra_params: Optional[dict] = None,
               mode: str = "on", max_rounds: int = MAX_TOOL_ROUNDS,
-              budget: Optional[int] = None) -> Iterator[tuple]:
+              budget: Optional[int] = None,
+              temperature: Optional[float] = None) -> Iterator[tuple]:
     """执行带联网工具的 Agent 循环，产出 (kind, payload) 事件。
 
     kind ∈ {"status","sources","answer"}；配置/网络错误抛 AIError。
@@ -67,21 +68,15 @@ def run_agent(provider_cfg: dict, model: str, api_key: str,
     budget_now = min(budget or DEFAULT_MAX_TOKENS, MAX_BUDGET)
 
     for rnd in range(1, max_rounds + 2):
-        b = budget_now
-        while True:  # 预算不足即抛错的兜底（chat_once 不自行处理截断）
-            try:
-                msg = chat_once(provider_cfg, model_eff, api_key, work,
-                                extra_params=extra_params, tools=tools,
-                                max_tokens=b)
-                break
-            except AIError as e:
-                if "max_tokens" in str(e):
-                    nb = min(b * 2, MAX_BUDGET)
-                    if nb == b:
-                        raise
-                    b = nb
-                    continue
-                raise
+        # chat_once 对 finish_reason=length 正常返回而非抛错，
+        # 截断处理统一走下方 length 分支（扩预算+断点续写）
+        try:
+            msg = chat_once(provider_cfg, model_eff, api_key, work,
+                            extra_params=extra_params, tools=tools,
+                            max_tokens=budget_now,
+                            temperature=temperature)
+        except AIError:
+            raise
 
         tcs = msg.get("tool_calls") or []
         if not tcs:
@@ -91,8 +86,8 @@ def run_agent(provider_cfg: dict, model: str, api_key: str,
             if finish in ("length", "max_tokens"):
                 if content:
                     answer_parts.append(content)
-                nb = min(b * 2, MAX_BUDGET)
-                if nb == b or rnd >= max_rounds + 1:
+                nb = min(budget_now * 2, MAX_BUDGET)
+                if nb == budget_now or rnd >= max_rounds + 1:
                     raise AIError(
                         f"回复被输出配额截断且预算已达上限 {MAX_BUDGET}。"
                         "请调低思考强度或精简问题。")
@@ -132,7 +127,8 @@ def run_agent(provider_cfg: dict, model: str, api_key: str,
             work.append({"role": "tool",
                          "tool_call_id": tc.get("id", ""),
                          "content": result_text})
-        budget_now = min(budget_now * 2, MAX_BUDGET)  # 续写/下轮预算同步扩容
+        # 工具轮不主动扩容：预算仅在真正发生 length 截断时翻倍，
+        # 避免超出部分厂商的 max_tokens 上限引发 400
 
     raise AIError(f"已达最大工具轮次({max_rounds})仍未给出最终回答，"
                   "请精简问题后重试。")
@@ -141,7 +137,7 @@ def run_agent(provider_cfg: dict, model: str, api_key: str,
 def parse_inline_sources(answer: str) -> list:
     """从正文中解析 Markdown 链接作为兜底来源（:online 模式无 tool 事件）。"""
     out = []
-    for m in _re.finditer(r"\[([^\]]{4,60})\]\((https?://[^)]+)\)", answer):
+    for m in _re.finditer(r"\[([^\]]{1,80})\]\((https?://[^)]+)\)", answer):
         if (m.group(1), m.group(2)) not in out:
             out.append((m.group(1), m.group(2)))
     return out[:8]

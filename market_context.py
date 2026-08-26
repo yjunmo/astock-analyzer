@@ -60,11 +60,6 @@ def _safe(section: str, fn: Callable[[], list]) -> str:
     return f"### {section}\n（获取失败：{type(last_err).__name__}）"
 
 
-def _col(row, key, default="-"):
-    v = row.get(key)
-    return default if v is None or (isinstance(v, float) and v != v) else v
-
-
 # ---------------------------------------------------------------- 市场情绪
 
 def _breadth_and_rank(code6: str) -> list:

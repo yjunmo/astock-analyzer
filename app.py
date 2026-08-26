@@ -402,7 +402,8 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                 # 联网 Agent：分步状态 + 整段正文 + 来源列表
                 for kind, piece in run_agent(
                         ai["provider_cfg"], ai["model"], ai["api_key"],
-                        payload, extra_params=extra_params, mode=web_mode):
+                        payload, extra_params=extra_params, mode=web_mode,
+                        budget=max_tokens, temperature=temperature):
                     if kind == "status":
                         notes.append(piece)
                         _flush_notes()

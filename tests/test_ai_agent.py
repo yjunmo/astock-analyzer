@@ -43,9 +43,12 @@ class TestRunAgent(unittest.TestCase):
         seq = list(responses)
 
         def fake_chat_once(cfg, model, key, messages, **kw):
-            calls.append({"model": model, "messages": [dict(m) for m in messages],
+            calls.append({"model": model,
+                          "messages": [dict(m) for m in messages],
                           "tools": kw.get("tools"),
-                          "max_tokens": kw.get("max_tokens")})
+                          "max_tokens": kw.get("max_tokens"),
+                          "temperature": kw.get("temperature"),
+                          "extra_params": kw.get("extra_params")})
             return dict(seq.pop(0))
 
         def fake_exec(name, args):
@@ -97,6 +100,18 @@ class TestRunAgent(unittest.TestCase):
         list(run_agent(CFG, "m1", "k", MSGS, budget=100))
         self.assertEqual(calls[0]["max_tokens"], 100)
         self.assertEqual(calls[1]["max_tokens"], 200)
+
+    def test_temperature_passthrough(self):
+        calls = self._install([_content_msg("hi")])
+        list(run_agent(CFG, "m1", "k", MSGS, temperature=0.7))
+        self.assertEqual(calls[0]["temperature"], 0.7)
+
+    def test_tool_rounds_do_not_inflate_budget(self):
+        # 未发生截断时，工具轮之间预算保持不变（避免超出厂商上限）
+        calls = self._install([_tool_call_msg(), _tool_call_msg(),
+                               _content_msg("done")])
+        list(run_agent(CFG, "m1", "k", MSGS, budget=100))
+        self.assertEqual([c["max_tokens"] for c in calls], [100, 100, 100])
 
     def test_anthropic_protocol_degrades_gracefully(self):
         cfg = {"protocol": "anthropic", "base_url": "https://a.example"}
