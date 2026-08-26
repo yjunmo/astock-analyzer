@@ -12,6 +12,12 @@
 """
 from __future__ import annotations
 
+import os
+
+# 国内数据源直连：避免系统代理拦截东财/新浪请求（ddgs 已显式传代理，不受影响）
+os.environ.setdefault("NO_PROXY", "*")
+os.environ.setdefault("no_proxy", "*")
+
 from datetime import datetime, timedelta
 from typing import Callable, Optional
 
@@ -19,7 +25,7 @@ import pandas as pd
 
 NEWS_LIMIT = 8          # 注入的新闻条数
 SEARCH_LIMIT = 5        # 网页检索结果条数
-SEARCH_TIMEOUT = 8      # 网页检索超时(秒)
+SEARCH_TIMEOUT = 6      # 单次网页检索超时(秒)
 BING_URL = "https://cn.bing.com/search?q={q}&count=10"
 
 
@@ -38,14 +44,20 @@ def _num(v, nd: int = 0) -> str:
 
 
 def _safe(section: str, fn: Callable[[], list]) -> str:
-    """执行采集函数；任何异常都降级为该节'暂不可用'。"""
-    try:
-        lines = fn() or []
-        if not lines:
-            return f"### {section}\n（接口未返回数据）"
-        return f"### {section}\n" + "\n".join(lines)
-    except Exception as e:  # noqa: BLE001 —— 单节失败不影响整体
-        return f"### {section}\n（获取失败：{type(e).__name__}）"
+    """执行采集函数；瞬时网络错误自动重试一次，仍失败降级为该节'获取失败'。"""
+    last_err = None
+    for attempt in range(2):
+        try:
+            lines = fn() or []
+            if not lines:
+                return f"### {section}\n（接口未返回数据）"
+            return f"### {section}\n" + "\n".join(lines)
+        except Exception as e:  # noqa: BLE001 —— 单节失败不影响整体
+            last_err = e
+            if attempt == 0:
+                import time
+                time.sleep(0.8)  # 东财接口偶发抖动，稍候重试
+    return f"### {section}\n（获取失败：{type(last_err).__name__}）"
 
 
 def _col(row, key, default="-"):
@@ -167,6 +179,49 @@ def _sector(code6: str) -> list:
     return out
 
 
+# ---------------------------------------------------------------- 指数与公告
+
+def _indices() -> list:
+    """主要指数当日点位/涨跌幅/成交额——大盘量能的结构化来源。"""
+    import akshare as ak
+    df = ak.stock_zh_index_spot_em(symbol="沪深重要指数")
+    want = ("上证指数", "深证成指", "创业板指", "科创50")
+    out = []
+    for _, r in df.iterrows():
+        if r.get("名称") in want:
+            chg = float(r.get("涨跌幅") or 0)
+            amt = float(r.get("成交额") or 0) / 1e8
+            out.append(f"- {r['名称']} {_num(r.get('最新价'), 2)}"
+                       f"（{chg:+.2f}%）成交额 {_num(amt)} 亿")
+    return out or ["- 未匹配到主要指数行"]
+
+
+def _disclosures(code6: str) -> list:
+    """近两周公告（巨潮资讯）——财报等重大事项的权威结构化来源。"""
+    import akshare as ak
+    end = datetime.now()
+    start = end - timedelta(days=14)
+    df = None
+    for market in ("沪深京", "深市", "沪市"):
+        try:
+            df = ak.stock_zh_a_disclosure_report_cninfo(
+                symbol=code6, market=market,
+                start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"))
+        except Exception:
+            continue
+        if df is not None and len(df):
+            break
+    if df is None or df.empty:
+        return [f"- 近14日无公告（或晚间披露尚未同步至巨潮接口）"]
+    title_col = next(c for c in df.columns if "标题" in str(c))
+    date_col = next((c for c in df.columns if "日期" in str(c)), None)
+    out = []
+    for _, r in df.head(8).iterrows():
+        d = str(r[date_col])[:10] if date_col else "-"
+        out.append(f"- [{d}] {r[title_col]}")
+    return out
+
+
 # ---------------------------------------------------------------- 消息面
 
 def _news(code6: str) -> list:
@@ -178,99 +233,6 @@ def _news(code6: str) -> list:
     for _, r in df.head(NEWS_LIMIT).iterrows():
         t = str(r.get("发布时间", ""))[:16].replace("-", "-")
         out.append(f"- [{t}] ({r.get('文章来源', '-')}) {r.get('新闻标题', '')}")
-    return out
-
-
-def _detect_proxy() -> str:
-    """探测可用代理：显式环境变量 > Windows 系统代理(IE设置)。返回空串表示直连。
-
-    用于 DuckDuckGo 等外网检索；国内数据源不受影响。
-    """
-    import os
-    for k in ("ASTOCK_SEARCH_PROXY", "HTTPS_PROXY", "https_proxy",
-              "HTTP_PROXY", "http_proxy"):
-        v = os.environ.get(k)
-        if v:
-            return v
-    try:
-        import winreg
-        key = winreg.OpenKey(
-            winreg.HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Internet Settings")
-        enabled, _ = winreg.QueryValueEx(key, "ProxyEnable")
-        if not enabled:
-            return ""
-        server, _ = winreg.QueryValueEx(key, "ProxyServer")
-        server = str(server).strip()
-        if ";" in server and "=" in server:  # 形如 http=...;https=...
-            parts = dict(p.split("=", 1) for p in server.split(";") if "=" in p)
-            server = parts.get("https") or parts.get("http") or ""
-        if server and not server.startswith("http"):
-            server = "http://" + server
-        return server
-    except Exception:
-        return ""
-
-
-def _web_search(name: str) -> list:
-    """尽力而为的网页检索：优先 DuckDuckGo(ddgs 包)，失败退回 Bing RSS。"""
-    q = f"{name} 股票 最新消息"
-    results: list[tuple[str, str, str]] = []  # (标题, 链接, 摘要)
-
-    def _via_ddg():
-        try:
-            from ddgs import DDGS          # 新包名（推荐）
-        except ImportError:
-            from duckduckgo_search import DDGS  # 旧包名兼容
-        px = _detect_proxy()
-        try:
-            client = DDGS(timeout=SEARCH_TIMEOUT, proxy=px or None)
-        except TypeError:  # 旧版不支持 proxy 参数
-            client = DDGS(timeout=SEARCH_TIMEOUT)
-        with client as dd:
-            for r in dd.text(q, max_results=SEARCH_LIMIT):
-                results.append((str(r.get("title", ""))[:90],
-                                str(r.get("href") or r.get("url") or "")[:80],
-                                str(r.get("body", ""))[:120]))
-
-    def _parse_bing() -> list:
-        """Bing 官方 RSS 输出（format=rss），比解析 HTML 结果页稳定且无反爬。"""
-        import re
-        import requests
-        from urllib.parse import quote
-        url = ("https://www.bing.com/search?q=" + quote(q)
-               + "&format=rss&setmkt=zh-CN&count=10")
-        resp = requests.get(url, timeout=SEARCH_TIMEOUT,
-                            headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        items = re.findall(
-            r"<item>\s*<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>\s*"
-            r"<link>(.*?)</link>\s*"
-            r"<description>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</description>",
-            resp.text, re.S)
-        strip = lambda s: re.sub(r"<[^>]+>", "", s or "").strip()  # noqa: E731
-        return [(strip(t)[:90], u.strip()[:80], strip(s)[:120])
-                for t, u, s in items[:SEARCH_LIMIT]]
-
-    try:
-        _via_ddg()
-    except Exception:
-        try:
-            results = _parse_bing()
-        except Exception:
-            return ["- 网页检索不可用（可 pip install ddgs 启用 DuckDuckGo）"]
-    if not results:
-        return ["- 网页检索无结果"]
-    # 相关性守卫：标题+摘要均未出现股票名的视为噪声，宁缺毋滥
-    if name:
-        related = [r for r in results if name in r[0] or name in r[2]]
-        if not related:
-            return ["- 网页检索无与该股直接相关的结果"]
-        results = related
-    out = []
-    for title, url, body in results:
-        src = f"（{url}）" if url.startswith("http") else ""
-        out.append(f"- 《{title}》{body}{src}")
     return out
 
 
@@ -304,15 +266,20 @@ def build_market_context(code6: str, name: str = "",
     code6 = str(code6).zfill(6)
     sections: list[tuple[str, Callable[[], list]]] = [
         ("市场情绪（涨跌家数/成交额）", lambda: _breadth_and_rank(code6)),
+        ("主要指数与大盘量能", _indices),
         ("涨停跌停与连板高度", _zt_dt_pools),
         ("所属行业板块", lambda: _sector(code6)),
         ("北向资金", _northbound),
         ("龙虎榜机构统计", lambda: _lhb(code6)),
+        ("近两周公告（巨潮资讯·财报等权威来源）", lambda: _disclosures(code6)),
         ("个股最新新闻", lambda: _news(code6)),
-        ("网页检索（尽力而为，可能滞后）",
-         lambda: (_web_search(name)) if name else ["- 未提供股票名，跳过"]),
     ]
-    blocks = [_safe(title, fn) for title, fn in sections]
+    blocks = []
+    # 各节并行抓取：总耗时≈最慢一节，而非逐节累加（网页检索单节可达数秒）
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(len(sections), 10)) as ex:
+        for block in ex.map(lambda pair: _safe(*pair), sections):
+            blocks.append(block)
     header = (f"数据时点：{datetime.now().strftime('%Y-%m-%d %H:%M')}（抓取时点快照，"
               "非实时行情；标注'获取失败/不可用'的维度请如实说明数据缺口，禁止编造）")
     return header + "\n\n" + "\n\n".join(blocks)

@@ -168,6 +168,17 @@ h3 {{ font-size:1.35rem !important; }}
 .pxcard {{ text-align:left; }}
 .pxcard .val {{ font-size:18px; font-weight:600; }}
 
+/* ---- 参考来源 ---- */
+.srcbox {{ border:1px solid var(--border); border-radius:10px;
+  background:var(--panel); padding:9px 13px; margin-top:10px; }}
+.srcbox .hd {{ font-size:12.5px; font-weight:700; color:var(--dim);
+  margin-bottom:5px; letter-spacing:.04em; }}
+.srcbox ol {{ margin:0; padding-left:22px; }}
+.srcbox li {{ font-size:12.5px; line-height:1.75; color:var(--dim);
+  word-break:break-all; }}
+.srcbox a {{ color:var(--accent); text-decoration:none; }}
+.srcbox a:hover {{ text-decoration:underline; }}
+
 /* ---- 窄屏适配 ---- */
 @media (max-width: 860px) {{
   .hero {{ gap:12px; padding:12px 14px; }}
@@ -289,3 +300,15 @@ def risk_panel(level: str, reasons: list) -> str:
     return (f'<div class="risk"><div class="hd"><span>⚠️ 风险提示</span>'
             f'<span class="lv {lv_cls}">{esc(level)}风险</span></div>'
             f"<ul>{lis}</ul></div>")
+
+
+def sources_block(items: list) -> str:
+    """联网搜索的参考来源列表：items=[(标题,url)]。"""
+    if not items:
+        return ""
+    lis = "".join(
+        f'<li><a href="{_html_mod.escape(str(u), quote=True)}" '
+        f'target="_blank" rel="noreferrer">{esc(t)}</a></li>'
+        for t, u in items)
+    return (f'<div class="srcbox"><div class="hd">🔗 参考来源</div>'
+            f"<ol>{lis}</ol></div>")

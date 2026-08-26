@@ -73,6 +73,21 @@ def _lhb_stat(symbol="近三月"):
     }])
 
 
+def _index_spot(symbol=None):
+    return pd.DataFrame([
+        {"名称": "上证指数", "最新价": 3521.66, "涨跌幅": 0.52, "成交额": 6.2e11},
+        {"名称": "深证成指", "最新价": 11234.5, "涨跌幅": -0.31, "成交额": 7.8e11},
+        {"名称": "创业板指", "最新价": 2345.6, "涨跌幅": 1.05, "成交额": 3.1e11},
+    ])
+
+
+def _cninfo_disclosure(symbol=None, market=None, start_date=None, end_date=None):
+    return pd.DataFrame([
+        {"公告日期": "2026-08-25", "公告标题": "2026年半年度报告"},
+        {"公告日期": "2026-08-20", "公告标题": "关于回购股份的进展公告"},
+    ])
+
+
 FAKE.stock_zh_a_spot_em = _spot
 FAKE.stock_zt_pool_em = _zt_pool
 FAKE.stock_zt_pool_dtgc_em = _dt_pool
@@ -83,6 +98,8 @@ FAKE.stock_board_industry_hist_em = _board_hist
 FAKE.stock_board_industry_cons_em = _cons
 FAKE.stock_news_em = _news
 FAKE.stock_lhb_stock_statistic_em = _lhb_stat
+FAKE.stock_zh_index_spot_em = _index_spot
+FAKE.stock_zh_a_disclosure_report_cninfo = _cninfo_disclosure
 
 
 class TestMarketContext(unittest.TestCase):
@@ -91,7 +108,6 @@ class TestMarketContext(unittest.TestCase):
         sys.modules["akshare"] = FAKE
         import market_context as mc
         self.mc = mc
-        mc._web_search = lambda name: ["- 《mock检索》测试快照"]
 
     def tearDown(self):
         if self._saved is None:
@@ -102,8 +118,15 @@ class TestMarketContext(unittest.TestCase):
     def test_context_covers_five_dimensions(self):
         text = self.mc.build_market_context("600519", "贵州茅台")
         for marker in ("市场情绪", "涨停", "所属行业板块", "北向资金",
-                       "龙虎榜", "个股最新新闻", "网页检索"):
+                       "龙虎榜", "个股最新新闻",
+                       "主要指数", "近两周公告"):
             self.assertIn(marker, text)
+
+    def test_indices_and_disclosures(self):
+        text = self.mc.build_market_context("600519", "贵州茅台")
+        self.assertIn("上证指数 3521.66（+0.52%）成交额 6200 亿", text)
+        self.assertIn("2026年半年度报告", text)
+        self.assertIn("[2026-08-25]", text)
 
     def test_breadth_numbers_and_rank(self):
         text = self.mc.build_market_context("600519", "贵州茅台")

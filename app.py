@@ -14,6 +14,7 @@ from report import BULL, BEAR, build_report
 
 import skill_store
 import ui_theme as ut
+from ai_agent import parse_inline_sources, run_agent
 from ai_client import (AIError, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
                        PROVIDERS, chat_complete, clear_local_config,
                        load_local_config, save_local_config)
@@ -223,10 +224,21 @@ def render_ai_settings() -> dict:
             help="DeepSeek V4 映射：medium→high；仅支持该参数的厂商生效")
         show_think = st.toggle("💭 显示思考链", value=True, key="ai_show_think",
                                help="关闭后不渲染思维链，不影响模型思考与对话质量")
+
+        st.divider()
+        web_opts = ["off", "on"] + (["native"] if pid == "openrouter" else [])
+        web_mode = st.selectbox(
+            "🌐 联网搜索", web_opts,
+            format_func=lambda v: {"off": "关闭",
+                                   "on": "开启（AI 自主多轮搜索）",
+                                   "native": "厂商原生（:online）"}.get(v, v),
+            key="ai_web_mode",
+            help="开启后 AI 可自主判断何时搜索、自选关键词多轮检索，"
+                 "并在回答末尾列出参考来源；OpenRouter 可选 :online 由厂商代执行")
     return {"provider_cfg": PROVIDERS[pid], "model": model.strip(),
             "api_key": api_key.strip(), "skill_name": skill_name,
             "think_mode": think_mode, "effort": effort,
-            "show_think": show_think}
+            "show_think": show_think, "web_mode": web_mode}
 
 
 def render_skill_editor():
@@ -309,6 +321,8 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                 with st.expander("💭 查看思考链"):
                     st.markdown(m["reasoning"])
             st.markdown(m["content"])
+            if m.get("sources"):
+                st.markdown(ut.sources_block(m["sources"]), unsafe_allow_html=True)
 
     quick_disabled = not (ai["api_key"] and ai["model"])
     quick = st.button("⚡ 一键综合解读", disabled=quick_disabled, key="ai_quick",
@@ -365,46 +379,74 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
 
         payload = ([{"role": "system", "content": st.session_state["ai_system"]}]
                    + msgs[-12:])
+        web_mode = ai.get("web_mode", "off")
         box = st.chat_message("assistant")
-        status = box.status("🤔 模型思考中…", expanded=False) if show_think else None
-        think_md = status.empty() if status else None
         note_md = box.empty()
+        src_md = box.empty()
         holder = box.empty()
+        status = (box.status("🤔 模型思考中…", expanded=False)
+                  if (show_think and web_mode == "off") else None)
+        think_md = status.empty() if status else None
         buf_r: list = []
         buf_a: list = []
+        sources: list = []
         notes: list = []
         err = None
+
+        def _flush_notes():
+            if notes:
+                note_md.markdown("\n".join(f"> ℹ️ {n}" for n in notes))
+
         try:
-            gen = chat_complete(ai["provider_cfg"], ai["model"], ai["api_key"],
-                                payload, temperature=temperature,
-                                max_tokens=max_tokens,
-                                extra_params=extra_params)
-            for kind, piece in gen:
-                if kind == "reasoning":
-                    buf_r.append(piece)
-                    if think_md is not None:
-                        think_md.markdown("".join(buf_r)[-6000:])
-                elif kind == "content":
-                    buf_a.append(piece)
-                    holder.markdown("".join(buf_a) + "▌")
-                elif kind == "restart":
-                    # 零正文即被截断：清空已渲染内容，按更大预算重新开始
-                    buf_r.clear()
-                    buf_a.clear()
-                    notes.append(piece)
-                    note_md.markdown("\n".join(f"> ℹ️ {n}" for n in notes))
-                    if status is not None:
-                        status.update(label=piece, state="running", expanded=True)
-                        think_md.markdown("")
-                    holder.markdown("")
-                elif kind == "notice":
-                    notes.append(piece)
-                    note_md.markdown("\n".join(f"> ℹ️ {n}" for n in notes))
+            if web_mode != "off":
+                # 联网 Agent：分步状态 + 整段正文 + 来源列表
+                for kind, piece in run_agent(
+                        ai["provider_cfg"], ai["model"], ai["api_key"],
+                        payload, extra_params=extra_params, mode=web_mode):
+                    if kind == "status":
+                        notes.append(piece)
+                        _flush_notes()
+                        holder.markdown("▌")
+                    elif kind == "sources":
+                        sources = list(piece or [])
+                    elif kind == "answer":
+                        buf_a.append(piece)
+                        holder.markdown(piece)
+            else:
+                gen = chat_complete(ai["provider_cfg"], ai["model"],
+                                    ai["api_key"], payload,
+                                    temperature=temperature,
+                                    max_tokens=max_tokens,
+                                    extra_params=extra_params)
+                for kind, piece in gen:
+                    if kind == "reasoning":
+                        buf_r.append(piece)
+                        if think_md is not None:
+                            think_md.markdown("".join(buf_r)[-6000:])
+                    elif kind == "content":
+                        buf_a.append(piece)
+                        holder.markdown("".join(buf_a) + "▌")
+                    elif kind == "restart":
+                        # 零正文即被截断：清空已渲染内容，按更大预算重新开始
+                        buf_r.clear()
+                        buf_a.clear()
+                        notes.append(piece)
+                        _flush_notes()
+                        if status is not None:
+                            status.update(label=piece, state="running",
+                                          expanded=True)
+                            think_md.markdown("")
+                        holder.markdown("")
+                    elif kind == "notice":
+                        notes.append(piece)
+                        _flush_notes()
         except Exception as e:
             err = str(e) if isinstance(e, AIError) else f"{type(e).__name__}: {e}"
 
         answer = "".join(buf_a)
         reasoning = "".join(buf_r)
+        if answer:
+            holder.markdown(answer)
         if status is not None:
             if reasoning:
                 think_md.markdown(reasoning[-6000:])
@@ -413,12 +455,19 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                 state="error" if (err and not answer) else "complete",
                 expanded=bool(reasoning) and not answer,
             )
-        if answer:
-            holder.markdown(answer)
 
+        if web_mode != "off" and answer and not sources:
+            sources = parse_inline_sources(answer)  # :online 模式兜底解析正文链接
+        if sources:
+            src_md.markdown(ut.sources_block(sources), unsafe_allow_html=True)
+
+        entry = {"role": "assistant", "content": answer}
+        if reasoning:
+            entry["reasoning"] = reasoning
+        if sources:
+            entry["sources"] = sources
         if answer or reasoning:
-            msgs.append({"role": "assistant", "content": answer,
-                         "reasoning": reasoning})
+            msgs.append(entry)
         if err:
             note = f"> ⚠️ {'流式输出中断' if answer else 'AI 调用失败'}：{err}"
             if not (answer or reasoning):

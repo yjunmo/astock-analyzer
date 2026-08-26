@@ -15,8 +15,9 @@ from typing import Iterator, Optional
 import requests
 
 DEFAULT_TEMPERATURE = 0.3
-# 推理模型的思考链与正文共享该输出预算，思考型模型需留足余量
-DEFAULT_MAX_TOKENS = 8192
+# 推理模型的思考链与正文共享该输出预算：思考型模型默认强度即 high，
+# 实测 8K 常被纯思考耗尽，故默认 16K；chat_complete 续写时还会自动翻倍
+DEFAULT_MAX_TOKENS = 16384
 # (连接超时, 读超时)：推理型模型思考期可能长时间不吐正文，读超时需放宽
 TIMEOUT_SECONDS = (15, 300)
 
@@ -29,6 +30,8 @@ PROVIDERS = {
         "models": ["deepseek-v4-pro", "deepseek-v4-flash",
                    "deepseek-v4-flash-vision-exp",
                    "deepseek-chat", "deepseek-reasoner"],
+        # 官方要求：思考模式+工具调用时，后续轮次需回传 reasoning_content
+        "reasoning_tools": True,
     },
     "moonshot": {
         "label": "Kimi (月之暗面)", "protocol": "openai",
@@ -262,7 +265,7 @@ def chat_complete(provider_cfg: dict, model: str, api_key: str, messages: list,
             if doubled > MAX_BUDGET or rounds > 10:
                 raise AIError(
                     f"思考链耗尽输出预算且已达上限 {MAX_BUDGET}，模型仍未产出正文。"
-                    "请更换更精简的技能或更高输出上限的模型。")
+                    "请更换更精简的技能、调低思考强度，或换更高输出上限的模型。")
             budget = doubled
             # 重试同时注入"精简推理"引导，避免重新生成同样冗长的思考链（省token）
             messages = messages + [{"role": "user", "content": RETRY_STEERING}]
@@ -273,9 +276,12 @@ def chat_complete(provider_cfg: dict, model: str, api_key: str, messages: list,
             raise AIError(
                 f"正文经 {rounds - 1} 次自动续写后仍被截断（累计预算 {budget}）。"
                 "请精简提问或更换模型。")
+        # 续写轮同步扩大预算：推理模型续写时仍会先思考，原预算往往不够
+        budget = min(budget * 2, MAX_BUDGET)
         messages = messages + [{"role": "user",
                                 "content": CONTINUE_INSTRUCTION}]
-        yield "notice", "检测到正文被截断，已请求模型从断点续写…"
+        yield "notice", (f"检测到正文被截断（思考+正文共享配额），"
+                         f"预算提升至 {budget} 并已请求从断点续写…")
 
 
 def chat_stream(provider_cfg: dict, model: str, api_key: str, messages: list,
@@ -337,3 +343,90 @@ def chat_stream(provider_cfg: dict, model: str, api_key: str, messages: list,
             if produced or attempt >= 1:
                 raise AIError(f"流式连接中断：{e}") from e
             # 未产出任何内容即断流（常见于推理模型长思考被掐断），静默重试一次
+
+
+def chat_once(provider_cfg: dict, model: str, api_key: str, messages: list,
+              temperature: float = DEFAULT_TEMPERATURE,
+              max_tokens: int = DEFAULT_MAX_TOKENS,
+              timeout=TIMEOUT_SECONDS,
+              extra_params: Optional[dict] = None,
+              tools: Optional[list] = None) -> dict:
+    """非流式单轮对话，供 Agent 工具循环使用。
+
+    返回归一化消息字典：
+    {"role":"assistant","content":str,"tool_calls":[...]|[],
+     "reasoning_content":str|None,"finish_reason":str}
+
+    tools 为 OpenAI function-calling schema 列表（仅 openai 协议支持；
+    anthropic 协议传入时忽略并按普通对话处理）。
+    """
+    if not api_key:
+        raise AIError("未填写 API Key")
+    if not model:
+        raise AIError("未填写模型名称")
+    base = (provider_cfg.get("base_url") or "").strip().rstrip("/")
+    if not base:
+        raise AIError("未配置 Base URL")
+
+    protocol = provider_cfg.get("protocol", "openai")
+    if protocol == "anthropic":
+        system_text = "\n\n".join(
+            m["content"] for m in messages if m.get("role") == "system")
+        conv = [{"role": m["role"], "content": m["content"]}
+                for m in messages if m.get("role") != "system"]
+        payload = {"model": model, "max_tokens": int(max_tokens),
+                   "temperature": float(temperature), "messages": conv,
+                   "stream": False}
+        if system_text:
+            payload["system"] = system_text
+        headers = {"x-api-key": api_key,
+                   "anthropic-version": "2023-06-01",
+                   "content-type": "application/json"}
+        url = base + "/v1/messages"
+    else:
+        payload = {"model": model, "messages": messages,
+                   "temperature": float(temperature),
+                   "max_tokens": int(max_tokens), "stream": False}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = "auto"
+        if extra_params:
+            payload.update(extra_params)
+        headers = {"Authorization": f"Bearer {api_key}",
+                   "Content-Type": "application/json"}
+        url = base + "/chat/completions"
+
+    resp = _post_with_retry(url, headers, payload, timeout=timeout)
+    try:
+        data = resp.json()
+    except Exception as e:
+        raise AIError(f"响应解析失败：{e}") from e
+    finally:
+        resp.close()
+
+    if protocol == "anthropic":
+        content_parts, tool_calls = [], []
+        for blk in data.get("content") or []:
+            btype = blk.get("type")
+            if btype == "text":
+                content_parts.append(blk.get("text", ""))
+            elif btype == "tool_use":
+                import json as _json
+                tool_calls.append({
+                    "id": blk.get("id", ""),
+                    "type": "function",
+                    "function": {"name": blk.get("name", ""),
+                                 "arguments": _json.dumps(blk.get("input") or {},
+                                                          ensure_ascii=False)},
+                })
+        return {"role": "assistant", "content": "\n".join(content_parts),
+                "tool_calls": tool_calls, "reasoning_content": None,
+                "finish_reason": data.get("stop_reason") or ""}
+
+    choice = (data.get("choices") or [{}])[0]
+    msg = choice.get("message") or {}
+    return {"role": "assistant",
+            "content": msg.get("content") or "",
+            "tool_calls": msg.get("tool_calls") or [],
+            "reasoning_content": msg.get("reasoning_content"),
+            "finish_reason": choice.get("finish_reason", "")}
