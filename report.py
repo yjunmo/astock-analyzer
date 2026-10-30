@@ -14,7 +14,8 @@ def build_report(df: pd.DataFrame, name: str = "", symbol: str = "",
     last = df.iloc[-1]
     prev = df.iloc[-2]
     chg = (last["close"] / prev["close"] - 1) * 100
-    prev_label = "较前一交易日" if period == "daily" else "较上一周"
+    prev_label = {"daily": "较前一交易日", "weekly": "较上一周",
+                  "monthly": "较上月"}.get(period, "较上一周期")
     lines = [
         f"【{name}({symbol}) 技术面综述】",
         f"最新收盘 {last['close']:.2f} 元，{prev_label}{'上涨' if chg >= 0 else '下跌'} {abs(chg):.2f}%。",

@@ -1,7 +1,9 @@
+import contextlib
 import logging
 import os
 import time
 from datetime import datetime
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -24,12 +26,62 @@ _SINA_HQ_HEADERS = {
 
 MIN_DAILY_BARS = 80
 MIN_DAILY_BARS_WEEKLY = 300
+MIN_DAILY_BARS_MONTHLY = 600
 CN_TZ = "Asia/Shanghai"
 
 
+@contextlib.contextmanager
+def default_request_timeout(seconds: float = 15.0):
+    """给未显式指定 timeout 的 requests 调用兜底一个默认超时。
+
+    akshare 的大部分请求不带 timeout，接口异常时可能无限挂起，
+    导致整页无响应；该管理器只补缺省值，显式 timeout（如 AI 客户端的
+    (15, 300)）不受影响，离开上下文后立即还原。
+    """
+    from requests.sessions import Session
+
+    orig = Session.request
+
+    def _request(self, method, url, **kwargs):
+        kwargs.setdefault("timeout", seconds)
+        return orig(self, method, url, **kwargs)
+
+    Session.request = _request
+    try:
+        yield
+    finally:
+        Session.request = orig
+
+
+def install_default_request_timeout(seconds: float = 30.0):
+    """进程级安装 requests 默认超时兜底（幂等，可重复调用）。
+
+    Streamlit 的 Ctrl+C 依赖脚本线程到达「中断点」才能退出；akshare 等库
+    的请求不带 timeout，接口卡死时脚本线程永久阻塞，导致「Stopping...」
+    长时间停不下来。安装后所有缺省 timeout 的请求都有上限；显式 timeout
+    （如 AI 客户端的 (15, 300)）不受影响。
+    """
+    from requests.sessions import Session
+
+    orig = Session.request
+    if getattr(orig, "_astock_default_timeout", None) is not None:
+        return
+
+    def _request(self, method, url, **kwargs):
+        kwargs.setdefault("timeout", seconds)
+        return orig(self, method, url, **kwargs)
+
+    _request._astock_default_timeout = seconds
+    Session.request = _request
+
+
 def normalize_symbol(code: str) -> str:
-    code = code.strip().lower()
+    if code is None:
+        raise ValueError("股票代码须为6位数字，如 600519")
+    code = str(code).strip().lower()
     if code[:2] in ("sh", "sz", "bj"):
+        if len(code) != 8 or not code[2:].isdigit():
+            raise ValueError("带前缀的代码格式应为 sh/sz/bj+6位数字，如 sh600519")
         return code
     if not (code.isdigit() and len(code) == 6):
         raise ValueError("股票代码须为6位数字，如 600519")
@@ -115,7 +167,6 @@ def _fetch_daily_tx(symbol: str, adjust: str) -> pd.DataFrame:
     import akshare as ak
     code, num = symbol[:2], symbol[2:]
     df = ak.stock_zh_a_hist_tx(symbol=code + num, adjust=adjust)
-    df = df.rename(columns={"turnover": "turnover"})
     df["date"] = pd.to_datetime(df["date"])
     return df.sort_values("date").reset_index(drop=True)
 
@@ -209,7 +260,7 @@ def _naive_cn(ts) -> pd.Timestamp:
 
 
 def drop_unclosed_bar(df: pd.DataFrame, period: str, now=None) -> pd.DataFrame:
-    """丢弃未收盘的日K / 当周未结束的周K，避免把残段当完成信号。"""
+    """丢弃未收盘的日K / 当周未结束的周K / 当月未走完的月K，避免把残段当完成信号。"""
     if df is None or df.empty or "date" not in df.columns:
         return df
     if now is None:
@@ -233,12 +284,21 @@ def drop_unclosed_bar(df: pd.DataFrame, period: str, now=None) -> pd.DataFrame:
     week_open = now.dayofweek < 4 or (now.dayofweek == 4 and before_close)
     if same_week and week_open:
         return df.iloc[:-1].reset_index(drop=True)
+
+    if period == "monthly":
+        same_month = (last.year, last.month) == (now.year, now.month)
+        month_end = pd.Timestamp(year=now.year, month=now.month, day=1) + pd.offsets.MonthEnd(0)
+        month_open = now.normalize() < month_end.normalize() or (
+            now.normalize() == month_end.normalize() and before_close)
+        if same_month and month_open:
+            return df.iloc[:-1].reset_index(drop=True)
     return df
 
 
-def to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+def _resample_bars(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """把日线按 rule（'W-FRI' 周线 / 'ME' 月线）聚合为长周期K线。"""
     indexed = df.set_index("date")
-    g = indexed.resample("W-FRI")
+    g = indexed.resample(rule)
     agg_map = {
         "open": ("open", "first"),
         "high": ("high", "max"),
@@ -263,20 +323,34 @@ def to_weekly(df: pd.DataFrame) -> pd.DataFrame:
     for col, how in extras:
         if col in indexed.columns:
             agg_map[col] = (col, how)
-    weekly = g.agg(**agg_map).dropna(subset=["close"])
-    return weekly.reset_index()
+    return g.agg(**agg_map).dropna(subset=["close"]).reset_index()
+
+
+def to_weekly(df: pd.DataFrame) -> pd.DataFrame:
+    return _resample_bars(df, "W-FRI")
+
+
+def to_monthly(df: pd.DataFrame) -> pd.DataFrame:
+    return _resample_bars(df, "ME")
 
 
 def get_history(symbol: str, period: str = "daily", adjust: str = "qfq",
-                is_st: bool = False) -> pd.DataFrame:
-    min_rows = MIN_DAILY_BARS_WEEKLY if period == "weekly" else MIN_DAILY_BARS
+                is_st: bool = False, raw_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """组装某周期K线（含涨跌停标志）。raw_df 可传入已缓存的不复权日线，
+    复权模式下避免重复发起第二次全量网络拉取。"""
+    min_rows = {
+        "weekly": MIN_DAILY_BARS_WEEKLY,
+        "monthly": MIN_DAILY_BARS_MONTHLY,
+    }.get(period, MIN_DAILY_BARS)
     df = fetch_daily(symbol, adjust, min_rows=min_rows)
     if adjust:
-        try:
-            raw = fetch_daily(symbol, "", min_rows=min_rows)
-            df = merge_raw_ohlc(df, raw)
-        except RuntimeError:
-            pass
+        if raw_df is None:
+            try:
+                raw_df = fetch_daily(symbol, "", min_rows=min_rows)
+            except RuntimeError:
+                raw_df = None
+        if raw_df is not None and not raw_df.empty:
+            df = merge_raw_ohlc(df, raw_df)
     else:
         df = df.copy()
         df["raw_open"] = df["open"]
@@ -288,4 +362,7 @@ def get_history(symbol: str, period: str = "daily", adjust: str = "qfq",
     if period == "weekly":
         df = to_weekly(df)
         df = drop_unclosed_bar(df, "weekly")
+    elif period == "monthly":
+        df = to_monthly(df)
+        df = drop_unclosed_bar(df, "monthly")
     return df

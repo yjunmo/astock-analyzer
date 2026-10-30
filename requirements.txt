@@ -1,5 +1,6 @@
 akshare>=1.18
 plotly>=6.0
-streamlit>=1.40
+streamlit>=1.46
 pandas>=2.2
 requests>=2.31
+tomli>=2.0; python_version < "3.11"

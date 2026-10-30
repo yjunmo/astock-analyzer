@@ -1,6 +1,7 @@
 # Skills 技能目录
 
-每个 `.md` 文件即一个可被 AI 使用的「分析技能」= 角色设定 + 分析框架 + 数据注入点。
+每个 `.md` 文件即一个可被 AI 使用的稳定 system prompt。动态行情、财务、回测和新闻
+由程序放入独立的 `<research_context>` 用户消息，避免把不可信外部文本当成系统指令。
 
 ## 文件格式
 
@@ -10,18 +11,16 @@ name: 技能显示名          # 可选，默认取文件名
 temperature: 0.3         # 可选，采样温度（默认 0.3；思考模式下部分厂商不生效）
 max_tokens: 8192         # 可选，回复长度上限（思考链与正文共享该配额）
 bars_tail: 60            # 可选，注入的K线根数（默认90，调小省token）
-thinking: auto           # 可选：on/off/auto（默认auto=不发参数，走服务端默认；
-                         #  DeepSeek V4 服务端默认为开启且effort=high）
-reasoning_effort: low    # 可选：low/medium/high/xhigh/max（DeepSeek V4 支持）
+thinking: auto           # 可选：on/off/auto；默认不覆盖厂商设置
+reasoning_effort: low    # 可选：low/medium/high/xhigh/max；研究助手默认 low，降低过度思考
 ---
-（正文 = 系统提示词，可用占位符：）
+（正文建议只写角色、分析协议和输出契约，不再嵌入动态数据占位符。）
 
-{report}    工具生成的信号报告全文（含多空评分、指标解读、价位参考、近期交叉）
-{plan}      价位参考卡片（低吸区/目标位/止损等）
-{bars}      尾随K线压缩表（OHLC/涨跌幅/量比/MA5/MA20/DIF/DEA/K/RSI6）
-{snapshot}  实时行情快照
-{market_ctx} 市场环境快照：涨跌家数/涨停连板高度/所属板块/北向资金/
-             龙虎榜统计/个股新闻/网页检索（抓取时点数据，失败项会标注）
+程序生成的证据编号：
+
+- `[T1]` 技术信号与价位；`[T2]` 多周期；`[T3]` 实时快照；`[K1]` 尾部 K 线
+- `[M1]` 市场环境与公告；`[F1]` 基本面；`[B1]` 回测；`[S1]` 短线统计
+- `[N1]`、`[N2]`……近期新闻
 ```
 
 ## 使用方式
@@ -32,5 +31,5 @@ reasoning_effort: low    # 可选：low/medium/high/xhigh/max（DeepSeek V4 支�
 
 ## 注意
 
-- 占位符必须原样保留大括号；未使用的占位符可以删除；
+- 旧技能中的占位符仍兼容，但只会被替换为 `<research_context>` 引用提示；
 - 请在提示词中保留"区分事实与推断、不构成投资建议"类约束。

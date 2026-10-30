@@ -1,0 +1,2 @@
+# Agent-Reach 官方仓库固定提交；PyPI 同名包不是本项目。
+agent-reach @ https://github.com/Panniantong/Agent-Reach/archive/a19a171fa980a0785849596492e0af4db800c82f.zip

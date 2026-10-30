@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .venv/
 启动分析工具.bat
+
+.cache_stock_codes.json
+.astock/

@@ -80,12 +80,13 @@ def build_trade_plan(df: pd.DataFrame, tone: str) -> Optional[dict]:
     sup_fallback = close - atr_v
     res_fallback = close + atr_v
 
-    plan = {"tone": tone, "close": round(close, 2), "atr": round(atr_v, 2)}
+    plan = {"tone": tone, "close": _round_px(close), "atr": _round_px(atr_v)}
 
     if tone == BULL:
         sup = support if support is not None else sup_fallback
         buy_lo, buy_hi = _zone(sup, atr_v)
         stop = min(sup - STOP_BUFFER_ATR * atr_v, buy_lo - 0.01)
+        stop = max(stop, 0.01)
         base_high = swing_high if swing_high > close else close
         breakout = max(base_high + BREAK_BUFFER_ATR * atr_v, close + BREAK_BUFFER_ATR * atr_v)
         t1 = resistance if resistance is not None else res_fallback
@@ -117,8 +118,8 @@ def build_trade_plan(df: pd.DataFrame, tone: str) -> Optional[dict]:
         res = resistance if resistance is not None else res_fallback
         trim_lo, trim_hi = _zone(res, atr_v)
         exit_base = support if support is not None else sup_fallback
-        exit_line = exit_base - EXIT_BUFFER_ATR * atr_v
-        down_watch = exit_base - TARGET_EXTEND_ATR * atr_v
+        exit_line = max(exit_base - EXIT_BUFFER_ATR * atr_v, 0.01)
+        down_watch = max(exit_base - TARGET_EXTEND_ATR * atr_v, 0.01)
 
         plan.update({
             "trim_low": _round_px(trim_lo), "trim_high": _round_px(trim_hi),
@@ -143,7 +144,7 @@ def build_trade_plan(df: pd.DataFrame, tone: str) -> Optional[dict]:
         trim_lo, trim_hi = _zone(hi_c, atr_v)
         base_high = swing_high if swing_high > close else close
         breakout = max(base_high + BREAK_BUFFER_ATR * atr_v, close + BREAK_BUFFER_ATR * atr_v)
-        exit_line = lo_c - EXIT_BUFFER_ATR * atr_v
+        exit_line = max(lo_c - EXIT_BUFFER_ATR * atr_v, 0.01)
 
         plan.update({
             "buy_low": _round_px(buy_lo), "buy_high": _round_px(buy_hi),

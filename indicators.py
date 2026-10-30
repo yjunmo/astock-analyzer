@@ -112,7 +112,7 @@ def add_atr(df: pd.DataFrame, n=14) -> pd.DataFrame:
 
 def compute_all(df: pd.DataFrame, period: str = "daily") -> pd.DataFrame:
     out = df.copy()
-    ma_periods = WEEKLY_MA_PERIODS if period == "weekly" else DAILY_MA_PERIODS
+    ma_periods = DAILY_MA_PERIODS if period == "daily" else WEEKLY_MA_PERIODS
     out = add_ma(out, ma_periods)
     out = add_boll(out)
     out = add_macd(out)

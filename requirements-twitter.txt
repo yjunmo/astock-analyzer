@@ -1,0 +1,2 @@
+# Optional Agent-Reach Twitter/X backend, isolated in .astock/agent-reach-venv.
+twitter-cli==0.8.5

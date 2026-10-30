@@ -3,7 +3,7 @@
 覆盖五个维度所需的原始数据（均来自公开接口，逐项容错，失败不致命）：
 1. 市场整体情绪：涨跌家数、涨停/跌停家数与连板高度
 2. 板块情况：个股所属行业板块当日涨跌幅、近5日趋势、板块内涨跌居前个股
-3. 消息面：个股最新新闻列表 + 尽力而为的网页检索（DuckDuckGo/Bing）
+3. 消息面：个股最新新闻列表
 4. 机构属性：龙虎榜上榜统计；成交额全市场排名
 5. 北向资金：沪深港通资金流向摘要
 
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 
-# 国内数据源直连：避免系统代理拦截东财/新浪请求（ddgs 已显式传代理，不受影响）
+# 国内数据源直连：避免系统代理拦截东财/新浪请求
 os.environ.setdefault("NO_PROXY", "*")
 os.environ.setdefault("no_proxy", "*")
 
@@ -24,9 +24,6 @@ from typing import Callable, Optional
 import pandas as pd
 
 NEWS_LIMIT = 8          # 注入的新闻条数
-SEARCH_LIMIT = 5        # 网页检索结果条数
-SEARCH_TIMEOUT = 6      # 单次网页检索超时(秒)
-BING_URL = "https://cn.bing.com/search?q={q}&count=10"
 
 
 def _today_str(fmt: str = "%Y%m%d") -> str:
@@ -76,7 +73,8 @@ def _breadth_and_rank(code6: str) -> list:
     rows = [f"- 沪深A股上涨 {up} 家 / 下跌 {down} 家 / 平盘 {flat} 家",
             f"- 两市总成交额约 {_num(total_amt_yi, 0)} 亿元"]
 
-    hit = df[df["代码"].astype(str).str.zfill(6) == code6]
+    code_col = df["代码"].astype(str).str.replace(r"\.0$", "", regex=True)
+    hit = df[code_col.str.zfill(6) == code6]
     if not hit.empty:
         r = hit.iloc[0]
         rank = int(amt.rank(ascending=False, na_option="bottom")[hit.index[0]])
@@ -93,11 +91,14 @@ def _zt_dt_pools() -> list:
     out = []
     zt = ak.stock_zt_pool_em(date=d)
     if zt is not None and len(zt):
-        lb = pd.to_numeric(zt.get("连板数"), errors="coerce")
-        out.append(f"- 今日涨停 {len(zt)} 家，最高连板 {_num(lb.max())} 板")
-        top = zt.assign(_lb=lb).sort_values("_lb", ascending=False).head(3)
-        names = "、".join(f"{r['名称']}({int(r['_lb'])}板)" for _, r in top.iterrows())
-        out.append(f"- 连板高标：{names}")
+        if "连板数" in zt.columns:
+            lb = pd.to_numeric(zt["连板数"], errors="coerce")
+            out.append(f"- 今日涨停 {len(zt)} 家，最高连板 {_num(lb.max())} 板")
+            top = zt.assign(_lb=lb).sort_values("_lb", ascending=False).head(3)
+            names = "、".join(f"{r['名称']}({int(r['_lb'])}板)" for _, r in top.iterrows())
+            out.append(f"- 连板高标：{names}")
+        else:
+            out.append(f"- 今日涨停 {len(zt)} 家（连板数据缺失）")
     else:
         out.append("- 今日涨停池为空或非交易日")
     dt = ak.stock_zt_pool_dtgc_em(date=d)
@@ -207,8 +208,10 @@ def _disclosures(code6: str) -> list:
         if df is not None and len(df):
             break
     if df is None or df.empty:
-        return [f"- 近14日无公告（或晚间披露尚未同步至巨潮接口）"]
-    title_col = next(c for c in df.columns if "标题" in str(c))
+        return ["- 近14日无公告（或晚间披露尚未同步至巨潮接口）"]
+    title_col = next((c for c in df.columns if "标题" in str(c)), None)
+    if title_col is None:
+        return ["- 公告接口返回字段异常（无标题列）"]
     date_col = next((c for c in df.columns if "日期" in str(c)), None)
     out = []
     for _, r in df.head(8).iterrows():
@@ -226,7 +229,7 @@ def _news(code6: str) -> list:
         return ["- 近期无个股新闻"]
     out = []
     for _, r in df.head(NEWS_LIMIT).iterrows():
-        t = str(r.get("发布时间", ""))[:16].replace("-", "-")
+        t = str(r.get("发布时间", ""))[:16].replace("T", " ")
         out.append(f"- [{t}] ({r.get('文章来源', '-')}) {r.get('新闻标题', '')}")
     return out
 
@@ -250,7 +253,7 @@ def _lhb(code6: str) -> list:
             if any(w in ks for w in ("上榜次数", "净买额", "机构")):
                 parts.append(f"{ks}:{_num(v) if isinstance(v, (int, float)) else v}")
         return [f"- {span}龙虎榜：" + ("，".join(parts) if parts else str(list(r.values())[:4]))]
-    return [f"- 近三个月无龙虎榜上榜记录"]
+    return ["- 近三个月无龙虎榜上榜记录"]
 
 
 # ---------------------------------------------------------------- 组装

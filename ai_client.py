@@ -9,6 +9,7 @@ API Key 仅用于请求头，绝不写入日志或异常文本。
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -27,7 +28,7 @@ PROVIDERS = {
         # 可在「自定义」中填 https://api.deepseek.com/anthropic
         "label": "DeepSeek", "protocol": "openai",
         "base_url": "https://api.deepseek.com",
-        "models": ["deepseek-v4-pro", "deepseek-v4-flash",
+        "models": ["deepseek-flash", "deepseek-v4-pro", "deepseek-v4-flash",
                    "deepseek-v4-flash-vision-exp",
                    "deepseek-chat", "deepseek-reasoner"],
         # 官方要求：思考模式+工具调用时，后续轮次需回传 reasoning_content
@@ -74,6 +75,23 @@ class AIError(RuntimeError):
     """对外可展示的 AI 调用错误。"""
 
 
+# 数据层（data_fetcher/news_intel 等）为绕过系统代理对国内行情源设置了
+# 全局 NO_PROXY=*（akshare 无法传 session）。AI 请求使用独立 Session 且
+# trust_env=False，不受该全局设置影响；代理由 _ai_proxies() 显式决策。
+_SESSION = requests.Session()
+_SESSION.trust_env = False
+
+
+def _ai_proxies() -> Optional[dict]:
+    """AI 请求的显式代理：环境变量优先（ASTOCK_SEARCH_PROXY / HTTPS_PROXY 等）。"""
+    for k in ("ASTOCK_SEARCH_PROXY", "HTTPS_PROXY", "https_proxy",
+              "HTTP_PROXY", "http_proxy"):
+        v = os.environ.get(k)
+        if v:
+            return {"http": v, "https": v}
+    return None
+
+
 CONFIG_PATH = Path(".streamlit/secrets.toml")
 _CONFIG_KEYS = ("provider", "base_url", "model", "api_key")
 
@@ -81,7 +99,10 @@ _CONFIG_KEYS = ("provider", "base_url", "model", "api_key")
 def load_local_config() -> dict:
     """读取本机 secrets.toml 中的 [ai] 配置；文件不存在或损坏时返回空 dict。"""
     try:
-        import tomllib
+        try:
+            import tomllib
+        except ImportError:  # Python 3.10 compatibility
+            import tomli as tomllib
         with open(CONFIG_PATH, "rb") as f:
             data = tomllib.load(f)
         cfg = dict(data.get("ai") or {})
@@ -92,27 +113,67 @@ def load_local_config() -> dict:
         return {}
 
 
+def _read_raw_config() -> str:
+    try:
+        return CONFIG_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return ""
+
+
+def _has_ai_section(raw: str) -> bool:
+    return any(ln.strip() == "[ai]" for ln in raw.splitlines())
+
+
+def _other_sections(raw: str) -> str:
+    """提取 [ai] 节之外的全部内容（原样保留其他 secrets 节与注释）。"""
+    keep = []
+    in_ai = False
+    for ln in raw.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_ai = stripped == "[ai]"
+        if in_ai:
+            continue
+        if ln.startswith("# 由 A股技术分析工具写入"):
+            continue
+        keep.append(ln)
+    return "\n".join(keep).rstrip()
+
+
 def save_local_config(cfg: dict) -> Path:
-    """把 AI 连接配置写入本机 secrets.toml（明文，仅供个人电脑使用）。"""
+    """把 AI 连接配置写入本机 secrets.toml（明文，仅供个人电脑使用）。
+
+    只替换 [ai] 节，文件中的其他 Streamlit secrets 原样保留。
+    """
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    lines = [
+    preserved = _other_sections(_read_raw_config())
+    lines = [preserved] if preserved else []
+    lines += [
         "# 由 A股技术分析工具写入；API Key 为明文存储，请勿提交仓库或分享该文件。",
         "",
         "[ai]",
     ]
     for k in _CONFIG_KEYS:
-        v = str(cfg.get(k, "")).replace('"', "'").replace("\n", " ")
+        v = str(cfg.get(k, "")).replace("\\", "\\\\").replace('"', "'").replace("\n", " ")
         lines.append(f'{k} = "{v}"')
-    CONFIG_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    CONFIG_PATH.write_text("\n".join(lines).rstrip("\n") + "\n", encoding="utf-8")
     return CONFIG_PATH
 
 
 def clear_local_config() -> bool:
-    try:
-        CONFIG_PATH.unlink()
-        return True
-    except FileNotFoundError:
+    """仅移除 [ai] 节；其他 secrets 节保留。文件无 [ai] 节时返回 False。"""
+    raw = _read_raw_config()
+    if not _has_ai_section(raw):
         return False
+    preserved = _other_sections(raw)
+    if preserved.strip():
+        CONFIG_PATH.write_text(preserved.rstrip() + "\n", encoding="utf-8")
+    else:
+        try:
+            CONFIG_PATH.unlink()
+        except FileNotFoundError:
+            pass
+    return True
 
 
 def _friendly_status(status: int, body: str) -> str:
@@ -129,10 +190,11 @@ def _friendly_status(status: int, body: str) -> str:
 def _post_with_retry(url: str, headers: dict, payload: dict,
                      timeout: float = TIMEOUT_SECONDS) -> requests.Response:
     last_err: Optional[Exception] = None
+    proxies = _ai_proxies()
     for _ in range(2):  # 网络级错误重试一次；HTTP 状态错误立即抛出不重试
         try:
-            resp = requests.post(url, headers=headers, json=payload,
-                                 stream=True, timeout=timeout)
+            resp = _SESSION.post(url, headers=headers, json=payload,
+                                 stream=True, timeout=timeout, proxies=proxies)
             if resp.status_code != 200:
                 try:
                     body = resp.text
@@ -224,7 +286,7 @@ CONTINUE_INSTRUCTION = (
 
 RETRY_STEERING = (
     "注意：上一次尝试因输出预算耗尽而未能产出正文。"
-    "本次请大幅精简内部推理过程——只保留决定性的关键判断，"
+    "本次请降低分析预算——只保留决定性的关键判断，"
     "跳过细枝末节的枚举与重复验证，尽快给出完整正文。"
 )
 
@@ -247,6 +309,8 @@ def chat_complete(provider_cfg: dict, model: str, api_key: str, messages: list,
     while True:
         rounds += 1
         got_content = False
+        attempt_content: list[str] = []
+        attempt_reasoning: list[str] = []
         try:
             for kind, piece in chat_stream(provider_cfg, model, api_key,
                                            messages, temperature=temperature,
@@ -254,8 +318,14 @@ def chat_complete(provider_cfg: dict, model: str, api_key: str, messages: list,
                                            extra_params=extra_params):
                 if kind == "content":
                     got_content = True
+                    attempt_content.append(piece)
+                elif kind == "reasoning":
+                    attempt_reasoning.append(piece)
                 yield kind, piece
-            return
+            # 某些 OpenAI 兼容端点会以 stop 正常结束，却只返回 reasoning_content、
+            # content 为空。不能把这种响应当成功，否则上层只能显示“模型未返回内容”。
+            if got_content:
+                return
         except AIError as e:
             if "max_tokens" not in str(e):
                 raise
@@ -267,7 +337,7 @@ def chat_complete(provider_cfg: dict, model: str, api_key: str, messages: list,
                     f"思考链耗尽输出预算且已达上限 {MAX_BUDGET}，模型仍未产出正文。"
                     "请更换更精简的技能、调低思考强度，或换更高输出上限的模型。")
             budget = doubled
-            # 重试同时注入"精简推理"引导，避免重新生成同样冗长的思考链（省token）
+            # 重试同时要求降低分析预算，避免再次耗尽配额。
             messages = messages + [{"role": "user", "content": RETRY_STEERING}]
             yield "restart", f"思考超出配额，输出预算提升至 {budget}，已要求模型精简推理后重试…"
             continue
@@ -278,6 +348,13 @@ def chat_complete(provider_cfg: dict, model: str, api_key: str, messages: list,
                 "请精简提问或更换模型。")
         # 续写轮同步扩大预算：推理模型续写时仍会先思考，原预算往往不够
         budget = min(budget * 2, MAX_BUDGET)
+        assistant_entry = {"role": "assistant",
+                           "content": "".join(attempt_content)}
+        if attempt_reasoning and provider_cfg.get("reasoning_tools"):
+            # DeepSeek 思考模式在后续轮次需要回传 reasoning_content；同时让模型
+            # 真正看到已输出正文，避免“从断点继续”时重复开头。
+            assistant_entry["reasoning_content"] = "".join(attempt_reasoning)
+        messages = messages + [assistant_entry]
         messages = messages + [{"role": "user",
                                 "content": CONTINUE_INSTRUCTION}]
         yield "notice", (f"检测到正文被截断（思考+正文共享配额），"
@@ -299,6 +376,8 @@ def chat_stream(provider_cfg: dict, model: str, api_key: str, messages: list,
         raise AIError("未填写 API Key")
     if not model:
         raise AIError("未填写模型名称")
+    if temperature is None:
+        temperature = DEFAULT_TEMPERATURE
     base = (provider_cfg.get("base_url") or "").strip().rstrip("/")
     if not base:
         raise AIError("未配置 Base URL")
@@ -364,6 +443,8 @@ def chat_once(provider_cfg: dict, model: str, api_key: str, messages: list,
         raise AIError("未填写 API Key")
     if not model:
         raise AIError("未填写模型名称")
+    if temperature is None:
+        temperature = DEFAULT_TEMPERATURE
     base = (provider_cfg.get("base_url") or "").strip().rstrip("/")
     if not base:
         raise AIError("未配置 Base URL")

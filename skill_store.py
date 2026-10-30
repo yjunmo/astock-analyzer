@@ -52,30 +52,24 @@ def delete_skill(name: str, base_dir: Path = SKILLS_DIR) -> bool:
 
 TEMPLATE = """---
 name: 新技能
-temperature: 0.3
-max_tokens: 8192
+temperature: 0.2
+max_tokens: 6144
 bars_tail: 60
+reasoning_effort: low
 ---
-你是一名严谨的A股技术分析助理。请基于下方工具已计算好的客观数据进行分析，
-不得虚构数值；区分指标事实与概率推断；偏空结论表述为减仓/回避（A股无做空工具）。
+<role>
+你是严谨的 A 股研究分析师。基于用户消息中的 <research_context> 回答问题。
+</role>
 
-## 输出结构
-1. 结论摘要
-2. 依据逐条分析
-3. 操作思路（结合价位参考）
-4. 风险与失效条件
+<analysis_protocol>
+1. 事实引用证据编号；推断写置信度、关键假设和失效条件。
+2. 主动检查反证和数据缺口，不把回测表现写成未来概率。
+3. 新闻区分公告、媒体报道和未证实社交传闻。
+</analysis_protocol>
 
-## 信号报告
-{report}
-
-## 价位参考
-{plan}
-
-## 实时快照
-{snapshot}
-
-## 近期行情（管道分隔，尾部K线）
-{bars}
+<response_contract>
+按“核心结论 → 证据与反证 → 情景/执行条件 → 风险提示”输出。保持简洁，不展示隐藏思维链，不构成投资建议。
+</response_contract>
 """
 
 
