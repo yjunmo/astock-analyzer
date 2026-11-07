@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from backtest import _run_loop
+from astock.analysis.backtest import _run_loop
 
 
 class TestBacktestExecution(unittest.TestCase):

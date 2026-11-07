@@ -2,27 +2,25 @@
 import json
 import pandas as pd
 import streamlit as st
-import research_store
-import research_services
+from astock.research import research_store
+from astock.research import research_services
 
-import data_fetcher as dtf
-import fundamentals as fund
-import skill_store
-import state
-import ui_theme as ut
-from analytics import build_snapshot
-from ai_agent import run_agent
-from ai_client import (AIError, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE,
-                       chat_complete)
-from ai_context import (build_placeholders, build_research_context,
-                        parse_frontmatter, render_system_prompt)
-from backtest import DEFAULT_FEE_RATE, backtest_text, run_backtest, trades_df
-from charts import make_backtest_figure, make_figure, make_fundamental_figure
-from multi_period import build_multi_period, multi_period_text
-from news_intel import collect_news
-from news_quality import evidence_text
-from report import BULL, BEAR
-import shortterm
+from astock.market import data_fetcher as dtf
+from astock.market import fundamentals as fund
+from astock.ai import skill_store
+from astock.ui import state
+from astock.ui import ui_theme as ut
+from astock.analysis.analytics import build_snapshot
+from astock.ai.ai_agent import run_agent
+from astock.ai.ai_client import AIError, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, chat_complete
+from astock.ai.ai_context import build_placeholders, build_research_context, parse_frontmatter, render_system_prompt
+from astock.analysis.backtest import DEFAULT_FEE_RATE, backtest_text, run_backtest, trades_df
+from astock.ui.charts import make_backtest_figure, make_figure, make_fundamental_figure
+from astock.analysis.multi_period import build_multi_period, multi_period_text
+from astock.news.news_intel import collect_news
+from astock.news.news_quality import evidence_text
+from astock.analysis.report import BULL, BEAR
+from astock.analysis import shortterm
 from views.sidebar import render_skill_editor
 from views.search_progress import progress_text
 

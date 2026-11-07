@@ -5,11 +5,11 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
-from event_pulse import EventPulse, analyze_pulse, collect_pulse, visible_items
-from news_intel import NewsItem, classify_channel
-from news_quality import rank_and_dedup
-from pulse_recommendations import a_share_code, finalize_chains, shortlist
-from search_workflow import SearchBudget, SearchReport, research_search
+from astock.news.event_pulse import EventPulse, analyze_pulse, collect_pulse, visible_items
+from astock.news.news_intel import NewsItem, classify_channel
+from astock.news.news_quality import rank_and_dedup
+from astock.news.pulse_recommendations import a_share_code, finalize_chains, shortlist
+from astock.search.search_workflow import SearchBudget, SearchReport, research_search
 
 
 BODY = "公司年报披露主营业务包括动力电池及储能系统。该段为离线测试正文，不构成任何实时投资事实。"

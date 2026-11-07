@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-import search_tools
+from astock.search import search_tools
 from scripts import agent_reach_twitter as gateway
-import twitter_backend as backend
+from astock.search import twitter_backend as backend
 
 
 def tweet(ident="123", date="2026-10-06T12:00:00Z"):

@@ -1,9 +1,9 @@
 import unittest
 from unittest.mock import patch
 
-import ai_client
-from ai_context import build_research_context, render_system_prompt
-from news_intel import NewsItem, _apply_ai_labels, llm_json
+from astock.ai import ai_client
+from astock.ai.ai_context import build_research_context, render_system_prompt
+from astock.news.news_intel import NewsItem, _apply_ai_labels, llm_json
 
 
 class TestPromptArchitecture(unittest.TestCase):
@@ -47,7 +47,7 @@ class TestPromptArchitecture(unittest.TestCase):
             self.assertEqual(messages[-2]["content"], "前半段")
             yield "content", "后半段"
 
-        with patch("ai_client.chat_stream", side_effect=fake_stream):
+        with patch.object(ai_client, "chat_stream", side_effect=fake_stream):
             chunks = list(ai_client.chat_complete(
                 {}, "m", "k", [{"role": "user", "content": "问"}],
                 max_tokens=100))
@@ -64,7 +64,7 @@ class TestPromptArchitecture(unittest.TestCase):
                 return
             yield "content", "最终正文"
 
-        with patch("ai_client.chat_stream", side_effect=fake_stream):
+        with patch.object(ai_client, "chat_stream", side_effect=fake_stream):
             chunks = list(ai_client.chat_complete(
                 {}, "m", "k", [{"role": "user", "content": "问"}],
                 max_tokens=100))

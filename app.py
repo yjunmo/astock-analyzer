@@ -6,11 +6,12 @@ os.environ.setdefault("no_proxy", "*")
 import pandas as pd
 import streamlit as st
 
-import data_fetcher as dtf
-import state
-import ui_theme as ut
-from report import build_report
+from astock.market import data_fetcher as dtf
+from astock.ui import state
+from astock.ui import ui_theme as ut
+from astock.analysis.report import build_report
 from views.news_page import render_news_intel
+from views.market_map_page import render_market_map
 from views.pulse_page import render_event_pulse
 from views.research_page import render_research_page
 from views.shortpage import render_short_page
@@ -26,6 +27,7 @@ st.set_page_config(page_title="A股研究台", page_icon="📈", layout="wide",
                    initial_sidebar_state="expanded")
 
 NAV_LABELS = {
+    "market_map": "股票云图",
     "analysis": "研究工作台",
     "library": "个人研究库",
     "screener": "短线扫描",
@@ -179,11 +181,14 @@ def main():
     render_search_settings()
 
     st.markdown(ut.brand_header(), unsafe_allow_html=True)
+    if run or st.session_state.get("_pending_run"):
+        st.session_state["main_nav"] = "analysis"
+    st.session_state.setdefault("main_nav", "market_map")
     page = st.segmented_control(
-        "主导航", list(NAV_LABELS), key="main_nav", default="analysis",
+        "主导航", list(NAV_LABELS), key="main_nav",
         format_func=lambda x: NAV_LABELS[x], label_visibility="collapsed",
         width="stretch")
-    page = page or "analysis"
+    page = page or "market_map"
 
     bundle = None
     stock_info = None
@@ -191,7 +196,9 @@ def main():
     load_failed = False
 
     code_str = str(code or "").strip()
-    if not (len(code_str) == 6 and code_str.isdigit()):
+    if page not in ("analysis", "news", "library", "screener"):
+        pass  # 全市场页面独立加载，避免切页时触发个股行情和报告计算。
+    elif not (len(code_str) == 6 and code_str.isdigit()):
         stock_info = ("请在左侧输入6位股票代码（如 600519 / 000001），或点击快捷按钮。"
                       "「短线选股」页可扫描全市场候选，「全科新闻」页也无需选股。")
     else:
@@ -223,7 +230,9 @@ def main():
 
     # 使用显式路由而非 st.tabs：Streamlit 的 tabs 会把隐藏页也执行一遍，
     # 这里确保基本面、全市场扫描和新闻抓取只在用户真正进入时运行。
-    if page == "analysis":
+    if page == "market_map":
+        render_market_map()
+    elif page == "analysis":
         if bundle:
             render_tech_panel(ai, bundle)
         elif stock_err:

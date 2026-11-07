@@ -1,6 +1,6 @@
-# A股研究台 v1.0
+# A股研究台 v1.1
 
-正式版 **v1.0**（应用版本 `1.0.0`），发布于 **2026-10-30**。
+正式版 **v1.1**（应用版本 `1.1.0`），发布于 **2026-11-07**。
 完整更新内容见 [发布说明](CHANGELOG.md)。
 
 一个面向个人研究的 Streamlit A 股工作台。基础分析不依赖大模型：输入股票代码后，
@@ -11,6 +11,10 @@
 
 ## 当前能力
 
+- 股票云图：按行业分组展示沪深北 A 股，红涨绿跌，支持总市值、流通市值、成交额或
+  等权面积；可搜索名称/代码、筛选市场与行业，悬停看行情、点击行业放大、选股后进入
+  个股研究。展示市场宽度与行情获取时间，抓取失败时保留当前会话的上次成功快照。
+  紧凑工具栏减少顶部留白，云图默认填满窗口剩余高度，也可手动调整高度。
 - 决策仪表盘：趋势结构、5/20/60/250 周期收益、20 周期年化波动、60 周期最大回撤、
   年度区间位置、ATR 与量比。
 - 五组规则信号：均线、MACD、KDJ、RSI、BOLL 每组一票，显示有效覆盖和一致程度，
@@ -48,7 +52,30 @@
 
 ## 启动
 
-建议使用 Python 3.10 或更高版本：
+建议使用 Python 3.10 或更高版本。
+
+### 方式一：Anaconda 环境（本机已部署）
+
+本机已用 Anaconda 建好 `astock` 环境（Python 3.11），依赖已安装：
+
+```bash
+conda activate astock
+python -m streamlit run app.py
+```
+
+Windows 也可直接双击根目录的 `run_conda.bat`（自动激活 `astock` 并启动），
+然后访问 <http://localhost:8501>。从零重建环境：
+
+```bash
+conda create -n astock python=3.11 -y
+conda activate astock
+pip install -r requirements.txt
+```
+
+> 本机环境把 pandas 固定在 2.x（`pip install "pandas<3"`），因为 akshare 对 pandas 3
+> 的兼容性尚未验证。
+
+### 方式二：任意 Python 环境
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -62,37 +89,70 @@ python3 -m streamlit run app.py
 ## 项目结构
 
 ```text
-app.py              页面路由、个股数据包与报告导出
-analytics.py        决策仪表盘派生指标（纯计算）
-data_fetcher.py     行情获取、复权、周期聚合与涨跌停标记
-indicators.py       MA / MACD / KDJ / RSI / BOLL / ATR / 量比
-signals.py          五组规则信号与投票
-trade_plan.py       支撑、压力、目标与风险价位
-backtest.py         T+1 事件驱动回测
-fundamentals.py     财务与估值快照
-views/              懒加载的页面模块
-tests/              核心计算与回测回归测试
-research_store.py   自选、投资假设、快照和证据的 SQLite 仓库
-search_intelligence.py A股实体扩展与分层查询规划
-search_tools.py     AI 检索工具、备用搜索、正文/PDF 读取与搜索健康状态
-search_workflow.py  共享研究 Agent：规划、检索、阅读、核验、补搜与引用预算
-news_search.py      将研究证据转换为新闻条目，保留正文和核验状态
-agent_reach_backend.py Agent-Reach 的 Exa MCP 搜索和 Jina Reader 适配
-config/mcporter.json 项目独立 Exa MCP 配置（不导入编辑器配置）
-research_services.py 项目、AI 归档、事件聚类、图谱与组合领域服务
-research_analytics.py 事件后收益、分市场基准、价格异动与组合风险计算
-monitor_service.py  预警规则、幂等通知、Webhook 与到期结论复盘
-monitor.py          可脱离网页运行的本地监控进程
+app.py                     Streamlit 入口：页面路由、个股数据包与报告导出
+monitor.py                 独立监控进程入口（python monitor.py --once）
+astock/                    应用主包，按领域分层
+  version.py               版本号
+  paths.py                 项目根路径（skills/、config/、.astock/ 都相对它定位）
+  market/                  行情与数据层
+    data_fetcher.py        行情获取、复权、周期聚合与涨跌停标记
+    fundamentals.py        财务与估值快照
+    market_context.py      指数与市场背景
+    screener.py            全市场短线扫描
+    market_map.py          云图行情采集、行业分类与市场宽度计算
+  analysis/                技术分析与规则层
+    indicators.py          MA / MACD / KDJ / RSI / BOLL / ATR / 量比
+    signals.py             五组规则信号与投票
+    analytics.py           决策仪表盘派生指标（纯计算）
+    trade_plan.py          支撑、压力、目标与风险价位
+    backtest.py            T+1 事件驱动回测
+    multi_period.py        多周期共振
+    shortterm.py           涨停统计与短线信号
+    report.py              规则研究报告
+  ai/                      AI 层
+    ai_client.py           OpenAI/Anthropic 协议、模型配置与流式输出
+    ai_context.py          提示词装配与上下文渲染
+    ai_agent.py            带引用的研究回答
+    skill_store.py         技能提示词文件管理
+  search/                  检索层
+    search_intelligence.py A股实体扩展与分层查询规划
+    search_tools.py        AI 检索工具、备用搜索、正文/PDF 读取与搜索健康状态
+    search_workflow.py     共享研究 Agent：规划、检索、阅读、核验、补搜与引用预算
+    agent_reach_backend.py Agent-Reach 的 Exa MCP 搜索和 Jina Reader 适配
+    twitter_backend.py     只读 Twitter/X 网关适配
+  news/                    新闻与要闻层
+    news_intel.py          个股情报采集、研判与翻译
+    news_quality.py        权威性/时效/相关性排序与去重
+    news_search.py         将研究证据转换为新闻条目，保留正文和核验状态
+    news_sectors.py        板块与题材映射
+    event_pulse.py         全球要闻收集与产业链深挖
+    pulse_recommendations.py A股研究推荐
+  research/                研究库层
+    research_store.py      自选、投资假设、快照和证据的 SQLite 仓库
+    research_services.py   项目、AI 归档、事件聚类、图谱与组合领域服务
+    research_analytics.py  事件后收益、分市场基准、价格异动与组合风险计算
+  monitor/                 预警监控层
+    monitor_service.py     预警规则、幂等通知、Webhook 与到期结论复盘
+  ui/                      界面支撑层
+    ui_theme.py            设计令牌、CSS 与 HTML 组件
+    state.py               会话状态与行情缓存
+    charts.py              Plotly 图表
+views/                     页面模块（顶层导入，按页面路由懒渲染）
+tests/                     核心计算与回测回归测试
+scripts/                   Agent-Reach / Twitter 可选依赖安装与只读网关脚本
+skills/                    可编辑的技能提示词
+config/mcporter.json       项目独立 Exa MCP 配置（不导入编辑器配置）
 ```
 
 ## 测试
 
 ```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
+conda activate astock            # 或用任意已安装依赖的 Python 环境
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest -q
 ```
 
-测试不应访问外部网络。上线前还应手动验证至少一个沪市、深市、创业板/科创板和北交所
-标的，因为第三方数据字段可能随时间变化。
+本机 `astock` 环境已验证 87 项测试全部通过。测试不应访问外部网络。上线前还应手动
+验证至少一个沪市、深市、创业板/科创板和北交所标的，因为第三方数据字段可能随时间变化。
 
 ## AI 配置
 
@@ -106,7 +166,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 所有联网搜索入口共用有界的研究循环：**拆解问题 → 动态查询 → 读取原文 →
 检查证据与冲突 → 按缺口补搜 → 带引用回答**。这借鉴了主流研究型 Agent 的
 迭代方式，而非复刻任何厂商的内部实现。全球要闻、个股情报、补充题材、AI 对话的
-联网研究，以及 `web_search` / `stock_research_search` 都使用 `search_workflow.py`。
+联网研究，以及 `web_search` / `stock_research_search` 都使用 `astock/search/search_workflow.py`。
 公告、快讯、本地证据库仍作为发现线索和一手来源入口，不再替代正文核验。
 
 模型规划查询，看到搜索结果后选择阅读目标；失败时按时效、权威性和查询方向兜底选取正文。
@@ -139,7 +199,7 @@ Agent 规划与核验使用当前配置的 AI 模型，会消耗模型额度；�
 启用“搜完自动深挖产业链并推荐A股”（有模型时默认开启）后，先用全部消息生成产业
 主线，再增量检索上中下游、替代、配套及候选公司的年报/产品/业务资料，最后精化
 研究推荐。产业补搜另有2轮、6次查询、4次阅读、32个来源、120秒预算。实现位于
-`pulse_recommendations.py`。通常展示3—5支不同A股及新闻主线、具体业务、传导逻辑、
+`astock/news/pulse_recommendations.py`。通常展示3—5支不同A股及新闻主线、具体业务、传导逻辑、
 下一催化与风险；没有合理联系时不凑数，不输出无实时依据的买入价或收益保证。
 
 证券代码须符合沪深北A股格式，并用腾讯行情名称尽力校对；已发现的名称/代码错配及

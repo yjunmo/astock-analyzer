@@ -3,8 +3,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from analytics import build_snapshot, signal_alignment
-from indicators import compute_all
+from astock.analysis.analytics import build_snapshot, signal_alignment
+from astock.analysis.indicators import compute_all
 
 
 def sample_frame(n=320, daily_return=0.001):

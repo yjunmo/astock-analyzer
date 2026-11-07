@@ -3,13 +3,11 @@ import os
 
 import streamlit as st
 
-import ui_theme as ut
-import research_services
-from ai_client import load_local_config
-from news_intel import (LOOKBACK_CHOICES, analyze_news, analyze_items,
-                        apply_filters, collect_news, item_view,
-                        lookback_label, parse_theme_input, status_entries)
-from search_tools import search_health
+from astock.ui import ui_theme as ut
+from astock.research import research_services
+from astock.ai.ai_client import load_local_config
+from astock.news.news_intel import LOOKBACK_CHOICES, analyze_news, analyze_items, apply_filters, collect_news, item_view, lookback_label, parse_theme_input, status_entries
+from astock.search.search_tools import search_health
 from views.search_progress import progress_text, render_search_report
 
 

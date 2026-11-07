@@ -5,10 +5,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-import ai_agent
-from event_pulse import collect_pulse
-from news_intel import collect_news, collect_theme_news
-from search_workflow import SearchBudget, research_search
+from astock.ai import ai_agent
+from astock.news.event_pulse import collect_pulse
+from astock.news.news_intel import collect_news, collect_theme_news
+from astock.search.search_workflow import SearchBudget, research_search
 
 
 BODY_A = "The announced investment is 100 million dollars. The company published the scope and delivery schedule in its original statement."

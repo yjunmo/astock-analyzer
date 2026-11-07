@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-import monitor_service
-import research_analytics
-import research_services as services
-import research_store as store
+from astock.monitor import monitor_service
+from astock.research import research_analytics
+from astock.research import research_services as services
+from astock.research import research_store as store
 
 
 class TestResearchSystem(unittest.TestCase):

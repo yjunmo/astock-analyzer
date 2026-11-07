@@ -5,10 +5,11 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-import agent_reach_backend as backend
-import ai_agent
-import search_tools as tools
-from search_workflow import SearchReport
+from astock.search import agent_reach_backend as backend
+from astock.ai import ai_agent
+from astock.research import research_store
+from astock.search import search_tools as tools
+from astock.search.search_workflow import SearchReport
 
 
 class FixedDate(datetime):
@@ -134,7 +135,7 @@ class TestSearchRouting(unittest.TestCase):
     def test_ai_tool_preserves_source_links_and_engine(self):
         with patch.object(backend, "search", return_value=[
                 ("宁德时代公告", "https://example.com/catl", "订单事实", "2026-10-06", backend.ENGINE)]), \
-                patch("research_store.search_evidence", return_value=[]), \
+                patch.object(research_store, "search_evidence", return_value=[]), \
                 patch.object(tools, "tool_read_page", return_value="读取失败：离线测试"):
             text = tools.execute_tool("web_search", {"query": "宁德时代"}, research_config={})
         self.assertIn(backend.ENGINE, text)

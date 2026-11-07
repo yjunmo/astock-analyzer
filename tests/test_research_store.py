@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 
-import research_store as store
+from astock.research import research_store as store
 
 
 class TestResearchStore(unittest.TestCase):

@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import time
 
-from monitor_service import scan_rules
+from astock.monitor.monitor_service import scan_rules
 
 
 def main() -> None:

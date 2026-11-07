@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{color-scheme:dark;font-family:Inter,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#e8eef4;background:#0c1117}
+*{box-sizing:border-box}body{margin:0}button{font:inherit;cursor:pointer}
+.toolbar{height:26px;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#8b9cab;font-size:11px}
+.crumbs{display:flex;align-items:center;gap:9px}.crumbs button{border:0;background:none;color:#c9d6e0;padding:4px 0}.crumbs button:hover{color:#a8c7a0}
+.hint{color:#748695}.actions{display:flex;gap:10px;align-items:center}.actions button{border:1px solid #2a3540;border-radius:5px;background:#141d25;color:#bac8d3;padding:3px 9px;font-size:11px}
+#map{width:100%;border:1px solid #26333b;border-radius:8px;overflow:hidden;background:#111920}
+svg{display:block;width:100%;touch-action:manipulation}text{pointer-events:none;fill:#f5f7f8;font-family:inherit;font-variant-numeric:tabular-nums}
+.tile{cursor:pointer;outline:none}.tile:hover>rect,.tile:focus>rect{stroke:#fff;stroke-width:2;filter:brightness(1.15)}.tile.selected>rect{stroke:#f3e3ae;stroke-width:2.5}
+.sector-head{cursor:zoom-in}.sector-head:hover rect{fill:#36454c}.sector-head:focus{outline:2px solid #a8c7a0;outline-offset:-2px}
+#tip{position:fixed;z-index:10;display:none;min-width:210px;max-width:280px;padding:14px 16px;background:rgba(16,24,32,.97);border:1px solid #4b5b68;border-radius:9px;box-shadow:0 12px 40px #0008;pointer-events:none;font-size:12px}
+.tip-title{font-size:15px;font-weight:700;display:flex;justify-content:space-between;gap:22px}.tip-sub{color:#8fa2b2;margin:5px 0 12px}.tip-row{display:flex;justify-content:space-between;gap:20px;margin-top:7px}.tip-row span:first-child{color:#8fa2b2}.tip-note{margin-top:12px;border-top:1px solid #28343e;padding-top:9px;color:#b6c9ad;font-size:11px}
+.empty{padding:80px 20px;text-align:center;color:#93a1af}.disabled{opacity:.5;pointer-events:none}
+@media(max-width:650px){.hint{display:none}.toolbar{font-size:10px}.actions{gap:4px}}
+</style>
+</head>
+<body>
+<div class="toolbar"><div class="crumbs"><button id="home" aria-label="返回全市场云图">全部行业</button><span id="breadcrumb"></span></div><div class="actions"><span class="hint">悬停查看 · 点击选股 · 点击行业标题放大</span><button id="reset">重置视图 ↺</button></div></div>
+<div id="map" role="region" aria-label="按行业分组的股票涨跌云图"></div><div id="tip" role="tooltip"></div>
+<script>
+const ns='http://www.w3.org/2000/svg',host=document.getElementById('map'),tip=document.getElementById('tip');
+let args={groups:[],height:640},zoom=null,selected=null,frame=null;
+function post(type,data={}){window.parent.postMessage({isStreamlitMessage:true,type,...data},'*')}
+function node(tag,attrs={},parent){const el=document.createElementNS(ns,tag);Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,v));if(parent)parent.appendChild(el);return el}
+function label(parent,value,x,y,size,anchor='start',weight=500){const el=node('text',{x,y,'font-size':size,'font-weight':weight,'text-anchor':anchor},parent);el.textContent=value;return el}
+function pct(n){return (n>0?'+':'')+Number(n).toFixed(2)+'%'}
+function money(n){if(n==null)return '—';return n>=1e12?(n/1e12).toFixed(2)+' 万亿':(n/1e8).toFixed(2)+' 亿'}
+function color(value){const n=Number(value);if(!Number.isFinite(n)||Math.abs(n)<.01)return '#3b4756';const palette=n>0?['#65424d','#95414d','#b93f50','#dc445a','#f24c64']:['#30534f','#286c5c','#25836a','#229a75','#25b083'];const level=Math.abs(n)<.5?0:Math.abs(n)<1?1:Math.abs(n)<3?2:Math.abs(n)<5?3:4;return palette[level]}
+// Squarified treemap: fill every group with rectangles proportional to positive weight.
+function layout(items,box){
+ const total=items.reduce((sum,item)=>sum+item.weight,0);if(!total||box.w<=0||box.h<=0)return [];
+ const scale=box.w*box.h/total,queue=items.map(item=>({item,area:item.weight*scale})).sort((a,b)=>b.area-a.area);
+ let b={...box},row=[],sum=0,out=[];
+ function worst(r,s,side){if(!r.length||side<=0)return Infinity;const max=r[0].area,min=r[r.length-1].area;return Math.max(side*side*max/(s*s),s*s/(side*side*min))}
+ function place(){const vertical=b.w>=b.h,side=vertical?b.h:b.w,thickness=sum/side;let offset=0;
+  row.forEach(entry=>{const length=entry.area/thickness;out.push({item:entry.item,x:vertical?b.x:b.x+offset,y:vertical?b.y+offset:b.y,w:vertical?thickness:length,h:vertical?length:thickness});offset+=length});
+  if(vertical){b.x+=thickness;b.w=Math.max(0,b.w-thickness)}else{b.y+=thickness;b.h=Math.max(0,b.h-thickness)}row=[];sum=0;
+ }
+ for(const entry of queue){const side=Math.min(b.w,b.h);if(row.length&&worst([...row,entry],sum+entry.area,side)>worst(row,sum,side))place();row.push(entry);sum+=entry.area}if(row.length)place();return out;
+}
+function hideTip(){tip.style.display='none'}
+function showTip(stock,sector,event){
+ tip.replaceChildren();
+ function block(cls,text){const d=document.createElement('div');d.className=cls;d.textContent=text;tip.appendChild(d);return d}
+ const title=block('tip-title',stock.name),change=document.createElement('span');change.textContent=pct(stock.change);change.style.color=stock.change>0?'#ff7d8d':stock.change<0?'#60d5ad':'#bac8d3';title.appendChild(change);
+ block('tip-sub',stock.code+' · '+sector);
+ [['最新价',Number(stock.price).toFixed(2)],['总市值',money(stock.cap)],['成交额',money(stock.amount)]].forEach(([k,v])=>{const row=block('tip-row','');[k,v].forEach(t=>{const s=document.createElement('span');s.textContent=t;row.appendChild(s)})});
+ block('tip-note','点击选中，在云图下方进入个股研究');tip.style.display='block';moveTip(event);
+}
+function moveTip(event){const rect=tip.getBoundingClientRect();tip.style.left=Math.max(5,Math.min(event.clientX+16,innerWidth-rect.width-8))+'px';tip.style.top=Math.max(5,Math.min(event.clientY+16,innerHeight-rect.height-8))+'px'}
+function choose(stock){selected=stock.code;hideTip();post('streamlit:setComponentValue',{value:{code:stock.code,nonce:Date.now()},dataType:'json'});render()}
+function mapHeight(){
+ const manual=args.height||640;
+ if(!args.auto_height)return manual;
+ try{
+  // Include the parent scroll offset so scrolling the page cannot resize the map.
+  const el=window.frameElement,parentWindow=window.parent;
+  if(!el||parentWindow.innerWidth<900)return manual;
+  const scroller=el.closest('[data-testid="stMain"]');
+  const top=el.getBoundingClientRect().top+(scroller?scroller.scrollTop:parentWindow.scrollY);
+  return Math.max(320,Math.floor(parentWindow.innerHeight-top-26-32));
+ }catch{return manual}
+}
+function render(){
+ cancelAnimationFrame(frame);frame=requestAnimationFrame(()=>{
+  hideTip();const width=host.clientWidth,height=mapHeight(),groups=args.groups||[];
+  if(zoom&&!groups.some(g=>g.name===zoom))zoom=null;
+  document.getElementById('breadcrumb').textContent=zoom?' / '+zoom:'';
+  host.replaceChildren();if(!groups.length){const empty=document.createElement('div');empty.className='empty';empty.textContent='当前筛选下没有可绘制的股票';host.appendChild(empty);post('streamlit:setFrameHeight',{height:240});return}
+  const svg=node('svg',{viewBox:`0 0 ${width} ${height}`,height,'aria-label':'股票矩形树图'},host),defs=node('defs',{},svg);
+  const visible=zoom?groups.filter(g=>g.name===zoom):groups;
+  layout(visible,{x:0,y:0,w:width,h:height}).forEach((sector,si)=>{
+   const g=sector.item,gap=1,x=sector.x+gap,y=sector.y+gap,w=Math.max(0,sector.w-gap*2),h=Math.max(0,sector.h-gap*2),head=h>38&&w>65?23:0;
+   if(w<1||h<1)return;
+   if(head){const header=node('g',{class:'sector-head',role:'button',tabindex:0,'aria-label':`放大${g.name}行业`},svg);node('rect',{x,y,width:w,height:head,fill:'#233139'},header);
+    const title=g.name+(w>170?'  ↗':'');label(header,title,x+7,y+15,11,'start',650);if(w>240)label(header,pct(g.change),x+w-8,y+15,10,'end');
+    const enter=()=>{zoom=zoom===g.name?null:g.name;render()};header.addEventListener('click',enter);header.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();enter()}});
+   }
+   layout(g.stocks,{x,y:y+head,w,h:Math.max(0,h-head)}).forEach((tile,ti)=>{
+    const s=tile.item,tw=Math.max(0,tile.w-.7),th=Math.max(0,tile.h-.7);if(tw<.2||th<.2)return;
+    const el=node('g',{class:'tile'+(selected===s.code?' selected':''),role:'button','data-code':s.code,'aria-label':`${s.name} ${s.code} ${pct(s.change)}`,...(tw*th>1800?{tabindex:0}:{})},svg);
+    node('rect',{x:tile.x,y:tile.y,width:tw,height:th,fill:color(s.change),stroke:'#13242a','stroke-width':.4},el);
+    if(tw>34&&th>22){
+     const id=`clip-${si}-${ti}`,clip=node('clipPath',{id},defs);node('rect',{x:tile.x+3,y:tile.y+2,width:Math.max(0,tw-6),height:Math.max(0,th-4)},clip);
+     const texts=node('g',{'clip-path':`url(#${id})`},el),large=tw>105&&th>68,size=large?Math.min(22,tw/7,th/4):Math.min(12,tw/6),mid=tile.x+tw/2;
+     const name=tw>64&&th>36?s.name:s.code;
+     if(th>36){label(texts,name,mid,tile.y+th/2-3,size,'middle',650);label(texts,pct(s.change),mid,tile.y+th/2+size+2,large?14:10,'middle')}
+     else label(texts,name,mid,tile.y+th/2+4,10,'middle');
+    }
+    el.addEventListener('pointerenter',e=>showTip(s,g.name,e));el.addEventListener('pointermove',moveTip);el.addEventListener('pointerleave',hideTip);el.addEventListener('click',()=>choose(s));el.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();choose(s)}});
+   });
+  });post('streamlit:setFrameHeight',{height:height+30});
+ });
+}
+document.getElementById('home').onclick=document.getElementById('reset').onclick=()=>{zoom=null;render()};
+window.addEventListener('message',event=>{if(event.source!==window.parent||event.data.type!=='streamlit:render')return;args=event.data.args;selected=args.selected||null;host.classList.toggle('disabled',!!event.data.disabled);render()});
+new ResizeObserver(render).observe(host);
+let parentObserver;
+try{
+ window.parent.addEventListener('resize',render);
+ const root=window.frameElement?.closest('.block-container');
+ if(root){parentObserver=new ResizeObserver(render);parentObserver.observe(root)}
+}catch{}
+window.addEventListener('pagehide',()=>{parentObserver?.disconnect();try{window.parent.removeEventListener('resize',render)}catch{}});
+post('streamlit:componentReady',{apiVersion:1});post('streamlit:setFrameHeight',{height:670});
+</script>
+</body></html>

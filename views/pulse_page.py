@@ -3,13 +3,11 @@ import os
 
 import streamlit as st
 
-import ui_theme as ut
-from ai_client import load_local_config
-from event_pulse import (analyze_pulse, collect_pulse, visible_chains,
-                         visible_events, visible_items)
-from news_intel import (LOOKBACK_CHOICES, channel_tier, lookback_label,
-                        status_entries)
-from news_sectors import SECTORS, labels_of
+from astock.ui import ui_theme as ut
+from astock.ai.ai_client import load_local_config
+from astock.news.event_pulse import analyze_pulse, collect_pulse, visible_chains, visible_events, visible_items
+from astock.news.news_intel import LOOKBACK_CHOICES, channel_tier, lookback_label, status_entries
+from astock.news.news_sectors import SECTORS, labels_of
 from views.news_page import render_news_feed
 from views.search_progress import progress_text, render_search_report
 

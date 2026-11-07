@@ -3,15 +3,15 @@ import os
 
 import streamlit as st
 
-import skill_store
-from ai_client import (PROVIDERS, clear_local_config, load_local_config,
-                       save_local_config)
+from astock.ai import skill_store
+from astock.ai.ai_client import PROVIDERS, clear_local_config, load_local_config, save_local_config
 
 
 def render_sidebar():
     with st.sidebar:
-        st.markdown("### A股研究台")
-        st.caption("输入标的，建立一份可验证的研究快照")
+        st.markdown('<div class="cloud-eyebrow">YOUR WORKSPACE</div>', unsafe_allow_html=True)
+        st.markdown("### 个股研究")
+        st.caption("从市场全景，深入一家公司")
         samples = [("600519", "茅台"), ("600036", "招商银行"),
                    ("300750", "宁德时代"), ("601318", "中国平安")]
         q1, q2 = st.columns(2)
@@ -58,7 +58,7 @@ def render_search_settings() -> None:
     with st.sidebar:
         with st.expander("搜索增强（可选）", expanded=False,
                          icon=":material/travel_explore:"):
-            from agent_reach_backend import backend_installed
+            from astock.search.agent_reach_backend import backend_installed
             installed = backend_installed()
             st.caption("优先使用 Agent-Reach 全网搜索，无需填写搜索 Key；网页正文由 Jina Reader 提取。"
                        "搜索服务失败时自动切换备用来源。Agent 规划、证据核验和补搜使用当前 AI 模型；"

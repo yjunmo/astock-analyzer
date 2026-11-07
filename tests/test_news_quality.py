@@ -1,7 +1,7 @@
 import unittest
 
-from news_intel import NewsItem
-from news_quality import evidence_text, rank_and_dedup
+from astock.news.news_intel import NewsItem
+from astock.news.news_quality import evidence_text, rank_and_dedup
 
 
 class TestNewsQuality(unittest.TestCase):

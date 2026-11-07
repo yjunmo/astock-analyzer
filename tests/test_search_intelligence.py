@@ -1,7 +1,7 @@
 import unittest
 
-from search_intelligence import entity_aliases, exchange_host, plan_stock_queries
-from search_tools import _canonical_url, keep_entity_relevant, rank_search_rows
+from astock.search.search_intelligence import entity_aliases, exchange_host, plan_stock_queries
+from astock.search.search_tools import _canonical_url, keep_entity_relevant, rank_search_rows
 
 
 class TestSearchIntelligence(unittest.TestCase):

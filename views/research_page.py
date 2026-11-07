@@ -9,12 +9,12 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-import data_fetcher as dtf
-import monitor_service
-import research_analytics
-import research_services as services
-import research_store as store
-import ui_theme as ut
+from astock.market import data_fetcher as dtf
+from astock.monitor import monitor_service
+from astock.research import research_analytics
+from astock.research import research_services as services
+from astock.research import research_store as store
+from astock.ui import ui_theme as ut
 
 
 def _open_stock(code: str) -> None:
@@ -51,13 +51,13 @@ def _render_active(bundle: dict) -> None:
         st.rerun()
     price, chg = _active_price(bundle)
     if c2.button("保存研究快照", width="stretch", key=f"snapshot_{code}"):
-        from analytics import build_snapshot
+        from astock.analysis.analytics import build_snapshot
         technical_snapshot = build_snapshot(bundle["df_all"], bundle.get("result") or {})
         payload = {"period": bundle["period"], "adjust": bundle["adjust"],
                    "bars": len(bundle["df_all"]), "technical": technical_snapshot}
         thesis_now = store.latest_thesis(code) or {}
         try:
-            import state
+            from astock.ui import state
             fundamental_snap = state.fetch_fundamentals(code)
         except Exception:
             fundamental_snap = {}
@@ -284,7 +284,7 @@ def _render_timeline(bundle: dict | None) -> None:
     code, name, df = bundle["symbol"][2:], bundle["name"], bundle["df_all"]
     research_analytics.ingest_price_events(code, name, df)
     try:
-        import state
+        from astock.ui import state
         financial_snapshot = state.fetch_fundamentals(code)
         research_analytics.ingest_financial_report_events(code, name, financial_snapshot)
     except Exception:
@@ -638,8 +638,8 @@ def _render_portfolio(bundle: dict | None) -> None:
             try:
                 histories[pos["symbol"]] = dtf.get_history(
                     dtf.normalize_symbol(pos["symbol"]), "daily", "qfq")
-                import state
-                import fundamentals as fund
+                from astock.ui import state
+                from astock.market import fundamentals as fund
                 market_caps[pos["symbol"]] = fund._pick_val(
                     state.fetch_spot_extra(pos["symbol"]), "总市值")
             except Exception as e:
