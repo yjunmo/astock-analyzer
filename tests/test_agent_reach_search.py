@@ -147,7 +147,9 @@ class TestSearchRouting(unittest.TestCase):
                               sources=[{"source_id": "W1", "title": "宁德时代公告",
                                         "url": "https://example.com/catl", "published": "",
                                         "engine": "agent-reach-exa", "read_status": "read",
-                                        "snippet": "订单", "excerpt": "原文订单"}])
+                                        "snippet": "订单", "excerpt": "原文订单", "body": "原文订单已披露"}],
+                              claims=[{"text": "订单已披露", "status": "single_source",
+                                       "evidence": [{"source_id": "W1", "quote": "原文订单已披露"}]}])
         with patch.object(ai_agent, "chat_once", return_value={"content": "基于公告的回答 [W1]"}) as chat:
             events = list(ai_agent.run_agent({"protocol": "openai"}, "model", "key", [
                 {"role": "system", "content": "研究规则"}, {"role": "user", "content": "查公告"}],

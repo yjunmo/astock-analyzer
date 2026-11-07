@@ -3,7 +3,7 @@
 数据来源（均防御式解析，任一接口失败降级为"数据缺失"标注，不致命）：
 - 新浪财务指标 `stock_financial_analysis_indicator`：季度序列，供趋势图与盈利能力快照
 - 同花顺财务摘要 `stock_financial_abstract_ths`：按报告期的营收/净利/增速/现金流等
-- 东财盘口快照 `stock_bid_ask_em`：PE/PB/总市值等估值字段
+- 腾讯行情、东财全市场快照：PE/PB/总市值等估值字段
 
 所有网络函数接受 ak_mod 注入便于离线测试；纯解析函数不依赖网络。
 输出为结构化 dict 与紧凑文本（{fundamentals} 占位符），每项标注报告期。
@@ -23,7 +23,7 @@ _YI = 1e8
 
 def _to_num(v) -> Optional[float]:
     """'1.47亿' / '12.5%' / 'False' / '--' / '' → float 或 None。"""
-    if v is None:
+    if v is None or isinstance(v, bool):
         return None
     if isinstance(v, (int, float)):
         f = float(v)
@@ -126,11 +126,16 @@ def _default_get(url: str, timeout: int = 8, headers: dict = None):
     return requests.get(url, timeout=timeout, headers=headers)
 
 
+def has_valuation(values: dict) -> bool:
+    return (all(_pick_val(values, field) is not None for field in ("市盈率", "市净率"))
+            and (_pick_val(values, "总市值") or 0) > 0)
+
+
 def fetch_spot_extra(code6: str, ak_mod=None, http_get=None) -> dict:
     """东财估值快照（市盈率/市净率/总市值/换手率等）。
 
-    三级兜底：个股盘口快照（快）→ 腾讯行情（快，东财故障时可用）
-    → 全市场快照（重但字段一致）。全部失败返回空 dict（调用方不得缓存空结果）。
+    按字段补齐：盘口只提供行情，腾讯和全市场快照补估值。
+    有行情不等于有估值，部分字段成功也必须继续兜底。
     """
     code6 = str(code6).zfill(6)
 
@@ -140,26 +145,37 @@ def fetch_spot_extra(code6: str, ak_mod=None, http_get=None) -> dict:
         import akshare
         return akshare
 
+    out = {}
+    def merge(values):
+        for key, value in values.items():
+            if key not in out or _to_num(out[key]) is None:
+                if _to_num(value) is not None or key in {"名称", "时间"}:
+                    out[key] = value
+
+    def complete():
+        return has_valuation(out)
+
     try:
         ak = _ak()
         df = ak.stock_bid_ask_em(symbol=code6)
-        out = dict(zip(df["item"].astype(str), df["value"]))
-        if out:
+        merge(dict(zip(df["item"].astype(str), df["value"])))
+        if complete():
             return out
     except Exception:  # noqa: BLE001 —— 估值快照缺失不致命，走兜底
         pass
     tx = _fetch_spot_tencent(code6, http_get=http_get)
-    if tx:
-        return tx
+    merge(tx)
+    if complete():
+        return out
     try:
         ak = _ak()
         df = ak.stock_zh_a_spot_em()
         hit = df[df["代码"].astype(str).str.zfill(6) == code6]
         if not hit.empty:
-            return {str(k): v for k, v in hit.iloc[0].to_dict().items()}
+            merge({str(k): v for k, v in hit.iloc[0].to_dict().items()})
     except Exception:  # noqa: BLE001
         pass
-    return {}
+    return out
 
 
 def fetch_financial_indicator(code6: str, start_year: str = "2019",
@@ -250,17 +266,19 @@ def _pick_val(d: dict, *keywords) -> Optional[float]:
 
 
 def _ensure_date_col(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty or "_date" in df.columns:
+    if df is None or df.empty:
         return df
     out = df.copy()
-    c = _col(out, "日期", "报告期", "date")
-    out["_date"] = (pd.to_datetime(out[c], errors="coerce") if c else pd.NaT)
-    return out
+    if "_date" not in out:
+        c = _col(out, "日期", "报告期", "date")
+        out["_date"] = (pd.to_datetime(out[c], errors="coerce") if c else pd.NaT)
+    return out.sort_values("_date", na_position="first").reset_index(drop=True)
 
 
 def build_fundamentals(indicator_df: pd.DataFrame,
                        abstract_df: pd.DataFrame,
-                       extras: Optional[dict] = None) -> dict:
+                       extras: Optional[dict] = None,
+                       earnings_data: Optional[dict] = None) -> dict:
     """组装结构化基本面快照。
 
     优先级：摘要表（报告期口径）> 指标序列 > 估值快照；缺失维度记入 gaps。
@@ -269,7 +287,13 @@ def build_fundamentals(indicator_df: pd.DataFrame,
     indicator_df = _ensure_date_col(indicator_df)
     abstract_df = _ensure_date_col(abstract_df)
     gaps: list = []
-    ind = _latest_cells(indicator_df, _INDICATOR_COLS) if len(indicator_df) else {}
+    # 指标源较旧时不得冒充摘要报告期的指标。
+    if len(indicator_df) and len(abstract_df):
+        latest = abstract_df["_date"].iloc[-1]
+        aligned = indicator_df[indicator_df["_date"] == latest]
+    else:
+        aligned = indicator_df
+    ind = _latest_cells(aligned, _INDICATOR_COLS) if len(aligned) else {}
     abs_ = _latest_cells(abstract_df, _ABSTRACT_COLS) if len(abstract_df) else {}
 
     def merged(key: str):
@@ -305,7 +329,7 @@ def build_fundamentals(indicator_df: pd.DataFrame,
     pe = _pick_val(extras, "市盈率")
     pb = _pick_val(extras, "市净率")
     mcap = _pick_val(extras, "总市值")
-    if pe is None and pb is None and mcap is None:
+    if pe is None or pb is None or mcap is None:
         gaps.append("估值（PE/PB/总市值）")
 
     trend = {}
@@ -330,8 +354,15 @@ def build_fundamentals(indicator_df: pd.DataFrame,
                 trend[key] = [v if pd.notna(v) else None
                               for v in abstract_df[c].map(_to_num)]
 
+    from astock.market.earnings import build_earnings_packet
+    earnings = build_earnings_packet(abstract_df, earnings_data)
+    if period == "未知报告期":
+        if len(indicator_df) and pd.notna(indicator_df['_date'].iloc[-1]):
+            period = indicator_df['_date'].iloc[-1].date().isoformat()
+        elif earnings['period']:
+            period = earnings['period']
     return {
-        "ok": bool(len(indicator_df) or len(abstract_df) or extras),
+        "ok": bool(len(indicator_df) or len(abstract_df) or extras or earnings['period']),
         "period": period,
         "gaps": gaps,
         "valuation": {"pe": pe, "pb": pb, "mcap": mcap},
@@ -344,6 +375,7 @@ def build_fundamentals(indicator_df: pd.DataFrame,
                      "quick_ratio": quick},
         "cashflow": {"ocf_per_share": ocf},
         "trend": trend,
+        "earnings": earnings,
     }
 
 
@@ -375,6 +407,8 @@ def fundamentals_text(snap: dict) -> str:
     lines.append("【现金流】每股经营现金流=" + num(cf["ocf_per_share"]) + "元")
     if snap.get("gaps"):
         lines.append("数据缺口：" + "、".join(snap["gaps"]) + "（缺失维度如实声明，不得编造）")
+    from astock.market.earnings import earnings_text
+    lines.append(earnings_text(snap.get("earnings") or {}))
     return "\n".join(lines)
 
 

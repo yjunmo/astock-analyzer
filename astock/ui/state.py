@@ -104,11 +104,12 @@ def fetch_spot_extra(code6: str) -> dict:
     """估值快照（session 级 TTL 缓存）。空结果只缓存 60s，避免接口故障时
     把缺失数据滞留一小时。"""
     key = f"spot_extra_{code6}"
+    from astock.market.fundamentals import has_valuation
     now = time.time()
     entry = st.session_state.get(key)
     if entry:
         data, ts = entry
-        ttl = _SPOT_OK_TTL if data else _SPOT_ERR_TTL
+        ttl = _SPOT_OK_TTL if has_valuation(data) else _SPOT_ERR_TTL
         if now - ts < ttl:
             return data
     from astock.market.fundamentals import fetch_spot_extra as _fse
@@ -124,12 +125,31 @@ def _fundamentals_core(code6: str):
     return (fetch_financial_indicator(code6), fetch_financial_abstract(code6))
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _earnings_data(code6: str):
+    from astock.market.earnings import fetch_earnings_data
+    return fetch_earnings_data(code6)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def company_context_cached(code6: str) -> dict:
+    from astock.market.company_context import fetch_company_context, company_context_text
+    return company_context_text(fetch_company_context(code6))
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def benchmark_cached(code6: str):
+    from astock.research.research_analytics import fetch_benchmark
+    return fetch_benchmark(code6)
+
+
 def fetch_fundamentals(code6: str) -> dict:
     """基本面快照（含趋势序列）。财务数据日频缓存，估值快照独立 TTL 刷新。"""
     from astock.market.fundamentals import build_fundamentals
     indicator_df, abstract_df = _fundamentals_core(code6)
     extras = fetch_spot_extra(code6)
-    return build_fundamentals(indicator_df, abstract_df, extras=extras)
+    return build_fundamentals(indicator_df, abstract_df, extras=extras,
+                              earnings_data=_earnings_data(code6))
 
 
 @st.cache_data(ttl=600, show_spinner=False)

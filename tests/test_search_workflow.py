@@ -54,8 +54,8 @@ class TestResearchWorkflow(unittest.TestCase):
         self.assertEqual(report.status, "complete")
         self.assertEqual(report.queries_used, 2)
         self.assertEqual(report.pages_used, 3)
-        self.assertEqual(len(report.claims), 1)
-        self.assertEqual(report.claims[0]["evidence"][0]["source_id"], "W3")
+        self.assertEqual(len(report.claims), 2)  # 保留先前的冲突证据，补充官方结论。
+        self.assertEqual(report.claims[-1]["evidence"][0]["source_id"], "W3")
         self.assertIn("framework agreement", report.sources[2]["body"])
         self.assertTrue(any(e["stage"] == "search" and e["round"] == 2 for e in trace))
         self.assertIn("W3", report.format())

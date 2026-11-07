@@ -509,13 +509,17 @@ def _render_review(bundle: dict | None) -> None:
     st.markdown(ut.sec_header("结论复盘", "保留当时的问题、模型、证据、价格和可证伪条件"),
                 unsafe_allow_html=True)
     code = bundle["symbol"][2:] if bundle else ""
+    runs = services.list_research_runs(code, limit=100)
+    verified_runs = {run['id'] for run in runs if '"verification"' in (run.get('structured_json') or '')}
     tasks = services.list_research_tasks(code, limit=100)
     if tasks:
         st.markdown("#### 研究任务流水线")
         for task in tasks[:30]:
+            coverage_label = (f"引用可核验率 {task['coverage']:.0f}%" if task.get('run_id') in verified_runs
+                              else "引用尚未复核")
             with st.expander(
                     f"任务 #{task['id']} · {task['status']} · 当前阶段 {task['current_stage']} · "
-                    f"覆盖率 {task['coverage']:.0f}%"):
+                    f"{coverage_label}"):
                 try:
                     subquestions = json.loads(task["subquestions_json"] or "[]")
                     sub_status = json.loads(task.get("subquestion_status_json") or "[]")
@@ -540,17 +544,21 @@ def _render_review(bundle: dict | None) -> None:
                     f"未解决 {len(unresolved)} 项 · 更新时间 {task['updated_at']}")
                 if task["error"]:
                     st.error(task["error"])
-    runs = services.list_research_runs(code, limit=100)
     if not runs:
         st.info("尚无归档结论。在 AI 研究助手完成一次任务后会自动保存。")
     for run in runs:
-        mark = {"complete": "✅", "incomplete": "⚠️"}.get(run["status"], "•")
-        with st.expander(f"{mark} #{run['id']} {run['created_at']} · {run['task_type']} · 覆盖率 {run['coverage']:.0f}%"):
+        mark = {"complete": "✅", "incomplete": "⚠️"}.get(run["status"], "•") if run['id'] in verified_runs else "⚠️"
+        coverage_label = (f"引用可核验率 {run['coverage']:.0f}%" if run['id'] in verified_runs
+                          else "旧版记录：引用尚未复核")
+        with st.expander(f"{mark} #{run['id']} {run['created_at']} · {run['task_type']} · {coverage_label}"):
             st.markdown(run["answer"] or "（无正文）")
             try:
                 structured = json.loads(run["structured_json"])
             except Exception:
                 structured = {}
+            if structured.get('analysis_quality'):
+                from views.search_progress import render_analysis_quality
+                render_analysis_quality(structured['analysis_quality'])
             st.json({"结构化结论": structured, "基准价格": run["baseline_price"],
                      "有效期": run["valid_until"], "当前复盘": run["outcome"] or "待复盘"},
                     expanded=False)

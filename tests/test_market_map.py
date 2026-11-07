@@ -131,19 +131,49 @@ class TestMarketMap(unittest.TestCase):
             mm.map_payload(sample_quotes(), "不存在")
 
 
+class TestPreviewHistory(unittest.TestCase):
+    def test_periods_and_year_to_date_use_closed_adjusted_bars(self):
+        frame = pd.DataFrame({
+            "date": ["2026-01-07", "2025-12-31", "2026-01-06", "2026-01-05"],
+            "close": [1000, 100, 110, 105],
+        })
+        history = mm.preview_history(frame, now="2026-01-07T11:00:00+08:00")
+        self.assertEqual(history["date"], "2026-01-06")
+        self.assertAlmostEqual(history["returns"]["2"], 10)
+        self.assertAlmostEqual(history["returns"]["ytd"], 10)
+        self.assertIsNone(history["returns"]["3"])
+
+    def test_new_listing_does_not_invent_a_year_end_baseline(self):
+        frame = pd.DataFrame({"date": ["2026-11-05", "2026-11-06"], "close": [100, 110]})
+        history = mm.preview_history(frame, now="2026-11-07T10:00:00+08:00")
+        self.assertEqual(history["status"], "ready")
+        self.assertTrue(all(value is None for value in history["returns"].values()))
+
+
 class TestMarketMapView(unittest.TestCase):
     def test_main_route_is_independent_and_selection_opens_research(self):
+        from streamlit.elements.lib import policies
         from streamlit.testing.v1 import AppTest
+        from astock.analysis.indicators import compute_all
         from astock.ui import state
         from astock.paths import PROJECT_ROOT
         from views import market_map_page as page
+        from views import tech
 
         meta = {"source": "测试行情", "expected": 5, "failed_pages": 0,
                 "fetched_at": "2026-11-07T10:00:00+08:00"}
+        candles = compute_all(pd.DataFrame({
+            "date": pd.date_range("2026-11-05", periods=2),
+            "open": [1400, 1410], "high": [1415, 1420],
+            "low": [1390, 1400], "close": [1410, 1415],
+        }))
         with patch.object(page, "_load_quotes", return_value=(sample_quotes(), meta)), \
              patch.object(page, "_load_industries", return_value=({}, "测试分类")), \
              patch.object(state, "fetch_realtime_cached", return_value={}) as realtime, \
-             patch.object(state, "ensure_df_all", return_value=(pd.DataFrame(), None)):
+             patch.object(state, "ensure_df_all", return_value=(candles, None)), \
+             patch.object(tech, "render_overview_panel") as overview, \
+             patch.object(policies, "_shown_default_value_warning", False), \
+             patch.object(policies._LOGGER, "warning") as widget_warning:
             app = AppTest.from_file(str(PROJECT_ROOT / "app.py"))
             app.session_state["code_field"] = "000001"
             app.session_state["active_query"] = ("sz000001", "daily", "qfq")
@@ -156,6 +186,9 @@ class TestMarketMapView(unittest.TestCase):
             self.assertFalse(app.exception)
             self.assertEqual(app.session_state["main_nav"], "analysis")
             self.assertEqual(app.session_state["code_field"], "600519")
+            self.assertEqual(app.session_state["tech_view"], "overview")
+            overview.assert_called_once()
+            self.assertFalse(any("tech_view" in str(call.args) for call in widget_warning.call_args_list))
             realtime.assert_called_once_with("sh600519")
 
     def test_controls_and_empty_search_without_network(self):

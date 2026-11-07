@@ -55,7 +55,8 @@ class TestResearchSystem(unittest.TestCase):
     def test_structured_ai_archive_marks_complete_and_incomplete(self):
         complete = """## 核心结论\n结论方向：看多 [T1]\n## 支持事实\n支持\n## 反对事实\n反对\n## 失效条件\n跌破阈值\n## 下一跟踪指标\n订单\n## 乐观情景\n增长\n## 基准情景\n平稳\n## 悲观情景\n下滑\n## 待确认问题\n无"""
         run_id = services.archive_research_run("300750", "宁德时代", "研究", complete,
-                                               model="deepseek-flash", baseline_price=200)
+                                               model="deepseek-flash", baseline_price=200,
+                                               evidence_registry={"T1": {"available": True}})
         self.assertEqual(services.list_research_runs("300750")[0]["status"], "complete")
         self.assertIn("research_due",
                       {r["rule_type"] for r in monitor_service.list_rules("300750")})

@@ -2,17 +2,23 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+
 import streamlit as st
 import streamlit.components.v1 as components
 
 from astock.market import market_map as mm
 from astock.paths import PROJECT_ROOT
+from astock.research import research_store
 from astock.ui import ui_theme as ut
 
 _cloud = components.declare_component(
     "stock_cloud", path=str(PROJECT_ROOT / "astock/ui/market_map_component"))
 _INDUSTRY_CACHE = PROJECT_ROOT / ".astock/market_map_industries.json"
+_PREVIEW_WORKERS = 4
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -55,11 +61,38 @@ def _pick_stock():
         st.session_state["_cloud_selected"] = code
 
 
-def _cloud_changed():
-    event = st.session_state.get("market_cloud")
-    if isinstance(event, dict) and event.get("code"):
-        st.session_state["_cloud_selected"] = event["code"]
-        st.session_state["cloud_pick"] = event["code"]
+@st.cache_resource
+def _preview_jobs():
+    return ThreadPoolExecutor(max_workers=_PREVIEW_WORKERS, thread_name_prefix="cloud-history"), Lock(), {}
+
+
+def _fetch_preview_history(code):
+    try:
+        return mm.fetch_preview_history(code)
+    except Exception:
+        return {"status": "unavailable"}
+
+
+def _history_response(code, retry=False):
+    """只等待已完成的日线请求。同一股票共享请求，并限制并发、缓存大小和有效期。"""
+    pool, lock, jobs = _preview_jobs()
+    with lock:
+        now = time.monotonic()
+        for key, (future, started) in list(jobs.items()):
+            if future.done():
+                ready = future.result()["status"] == "ready"
+                ttl = 300 if ready else 30
+                if now - started >= ttl or (retry and key == code and not ready):
+                    del jobs[key]
+        if code not in jobs:
+            if sum(not future.done() for future, _ in jobs.values()) >= _PREVIEW_WORKERS:
+                return {"status": "loading"}
+            if len(jobs) >= 64:
+                oldest_done = next(key for key, (future, _) in jobs.items() if future.done())
+                del jobs[oldest_done]
+            jobs[code] = (pool.submit(_fetch_preview_history, code), now)
+        future, _ = jobs[code]
+    return future.result() if future.done() else {"status": "loading"}
 
 
 def _open_research(code):
@@ -68,6 +101,51 @@ def _open_research(code):
     st.session_state["_pending_run"] = True
     st.session_state["_pending_page"] = "analysis"
     st.session_state["_pending_tech_view"] = "overview"
+
+
+def _handle_preview_event(event, filtered, quotes, meta):
+    preview = st.session_state.get("_cloud_preview")
+    if not isinstance(event, dict):
+        return preview
+    nonce = event.get("nonce")
+    if nonce is None or nonce == st.session_state.get("_cloud_event_nonce"):
+        return preview
+    st.session_state["_cloud_event_nonce"] = nonce
+    code = event.get("code")
+    action = event.get("action", "select")
+    if not isinstance(code, str) or action not in ("preview", "poll", "select", "retry", "watch", "research"):
+        return preview
+    rows = quotes[quotes["代码"] == code]
+    if rows.empty:
+        return preview
+    row = rows.iloc[0]
+    if action == "research":
+        _open_research(code)
+        st.rerun()
+    if action == "select" and code in filtered["代码"].values:
+        st.session_state["_cloud_selected"] = code
+        st.session_state["cloud_pick"] = code
+
+    new_snapshot = not preview or (preview["code"], preview["fetched_at"]) != (code, meta["fetched_at"])
+    if new_snapshot:
+        preview = mm.preview_snapshot(row, quotes)
+        preview.update(source=meta["source"], fetched_at=meta["fetched_at"], watched=False)
+    if new_snapshot or action in ("preview", "select"):
+        try:
+            preview["watched"] = research_store.is_watched(code)
+            preview.pop("watch_error", None)
+        except (OSError, sqlite3.Error):
+            preview["watch_error"] = "暂时无法读取自选列表"
+    if action == "watch":
+        try:
+            research_store.add_watchlist(code, row["名称"])
+            preview["watched"] = True
+            preview.pop("watch_error", None)
+        except (OSError, sqlite3.Error):
+            preview["watch_error"] = "未能保存自选，请重试"
+    preview["history"] = _history_response(code, retry=action == "retry")
+    st.session_state["_cloud_preview"] = preview
+    return preview
 
 
 def _summary(stats):
@@ -166,8 +244,17 @@ def render_market_map():
     if omitted:
         st.caption(f"{omitted} 只股票的{area}缺失或为零，未参与面积绘制；上方统计仍包含这些股票。可切换「等权」查看。")
 
+    _render_map_display(groups, filtered, quotes, meta, height, fit_window, str(time.monotonic_ns()))
+    st.caption(f"数据口径：最新可得快照，非逐笔行情；休市期间展示行情源最近返回值。"
+               f"行业采用{industry_source}，已覆盖 {covered:,} / {len(quotes):,} 只，其余归入「未分类」；无有效报价的股票不参与统计。")
+
+
+@st.fragment
+def _render_map_display(groups, filtered, quotes, meta, height, fit_window, view_id):
+    # 悬停查询只更新云图区域，沿用当前市场快照。
+    preview = _handle_preview_event(st.session_state.get("market_cloud"), filtered, quotes, meta)
     _cloud(groups=groups, height=height, auto_height=fit_window, selected=st.session_state.get("_cloud_selected"),
-           key="market_cloud", default=None, on_change=_cloud_changed)
+           view_id=view_id, preview=preview, key="market_cloud", default=None)
 
     swatches = [("≤ −5%", "#25b083"), ("−3%", "#229a75"), ("−1%", "#25836a"),
                 ("−0.5%", "#286c5c"), ("0%", "#3b4756"), ("+0.5%", "#95414d"),
@@ -190,9 +277,8 @@ def render_market_map():
             detail.markdown(f'<div class="cloud-pick"><b>{ut.esc(row["名称"])}</b>'
                             f'<strong class="{"pos" if row["涨跌幅"] > 0 else "neg" if row["涨跌幅"] < 0 else ""}">{row["最新价"]:.2f} <small>{row["涨跌幅"]:+.2f}%</small></strong>'
                             f'<span>{ut.esc(row["行业"])} · 市值 {mm.format_amount(row["总市值"])}</span></div>', unsafe_allow_html=True)
-            action.button("进入个股研究 ↗", type="primary", width="stretch", on_click=_open_research, args=(code,))
+            if action.button("进入个股研究 ↗", type="primary", width="stretch"):
+                _open_research(code)
+                st.rerun()
         else:
             detail.caption("从市场全景找到关注标的，再展开技术、基本面与事件研究。")
-
-    st.caption(f"数据口径：最新可得快照，非逐笔行情；休市期间展示行情源最近返回值。"
-               f"行业采用{industry_source}，已覆盖 {covered:,} / {len(quotes):,} 只，其余归入「未分类」；无有效报价的股票不参与统计。")

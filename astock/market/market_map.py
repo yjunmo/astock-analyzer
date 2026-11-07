@@ -10,10 +10,14 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import requests
 
+from astock.market import data_fetcher as dtf
+
 CN_TZ = ZoneInfo("Asia/Shanghai")
 API = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
 HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"}
 NUMERIC = ("最新价", "涨跌幅", "成交额", "总市值", "流通市值", "换手率")
+QUOTE_FIELDS = {"open": "今开", "high": "最高", "low": "最低", "settlement": "昨收"}
+RETURN_PERIODS = (2, 3, 5, 10, 20, 60, 120, 250)
 AREA_FIELDS = ("总市值", "流通市值", "成交额", "等权")
 MARKETS = ("全部A股", "沪市主板", "深市主板", "创业板", "科创板", "北交所")
 
@@ -134,6 +138,7 @@ def fetch_quotes(http_get=None):
         "code": "代码", "name": "名称", "trade": "最新价", "changepercent": "涨跌幅",
         "amount": "成交额", "mktcap": "总市值", "nmc": "流通市值",
         "turnoverratio": "换手率", "ticktime": "行情时间",
+        **QUOTE_FIELDS,
     })
     for field in ("总市值", "流通市值"):
         if field in df:
@@ -159,14 +164,14 @@ def board_of(code):
 
 
 def normalize_quotes(frame, industries=None):
-    columns = ["代码", "名称", *NUMERIC, "行业", "市场", "行情时间"]
+    columns = ["代码", "名称", *NUMERIC, *QUOTE_FIELDS.values(), "行业", "市场", "行情时间"]
     if frame is None or frame.empty or not {"代码", "名称"}.issubset(frame.columns):
         return pd.DataFrame(columns=columns)
     df = frame.copy()
     df["代码"] = df["代码"].astype(str).str.replace(r"^(sh|sz|bj)", "", regex=True).str.zfill(6)
     df = df[df["代码"].str.fullmatch(r"\d{6}", na=False)].copy()
     df["名称"] = df["名称"].fillna(df["代码"]).astype(str)
-    for field in NUMERIC:
+    for field in (*NUMERIC, *QUOTE_FIELDS.values()):
         values = df[field] if field in df else pd.Series(float("nan"), index=df.index)
         df[field] = pd.to_numeric(values, errors="coerce").replace([float("inf"), -float("inf")], float("nan"))
     df = df[(df["最新价"] > 0) & df["涨跌幅"].notna()].copy()
@@ -248,6 +253,72 @@ def map_payload(frame, area="总市值"):
         groups.append({**sector, "weight": float(subset["weight"].sum()), "stocks": stocks})
     groups.sort(key=lambda item: item["weight"], reverse=True)
     return groups, omitted
+
+
+def preview_history(frame, now=None):
+    """按已收盘前复权日线计算区间涨跌幅，样本不足保留空值。"""
+    if frame.empty:
+        return {"status": "unavailable"}
+    now = pd.Timestamp(now if now is not None else datetime.now(CN_TZ))
+    if now.tzinfo is not None:
+        now = now.tz_convert(CN_TZ).tz_localize(None)
+    bars = frame.loc[:, ["date", "close"]].copy()
+    dates = pd.to_datetime(bars["date"], errors="coerce")
+    if dates.dt.tz is not None:
+        dates = dates.dt.tz_convert(CN_TZ).dt.tz_localize(None)
+    bars["date"] = dates.dt.normalize()
+    bars["close"] = pd.to_numeric(bars["close"], errors="coerce")
+    bars = bars[bars["date"].le(now) & bars["close"].gt(0) & bars["close"].lt(math.inf)]
+    bars = bars.drop_duplicates("date", keep="last").sort_values("date")
+    bars = dtf.drop_unclosed_bar(bars, "daily", now=now)
+    if bars.empty:
+        return {"status": "unavailable"}
+
+    close = bars["close"]
+    latest = float(close.iloc[-1])
+    returns = {
+        str(days): (latest / float(close.iloc[-days - 1]) - 1) * 100 if len(close) > days else None
+        for days in RETURN_PERIODS
+    }
+    last_date = bars["date"].iloc[-1]
+    previous_year = bars.loc[bars["date"].dt.year == now.year - 1, "close"]
+    returns["ytd"] = ((latest / float(previous_year.iloc[-1]) - 1) * 100
+                      if last_date.year == now.year and not previous_year.empty else None)
+    return {"status": "ready", "date": last_date.date().isoformat(), "returns": returns}
+
+
+def fetch_preview_history(code):
+    symbol = dtf.normalize_symbol(code)
+    # 云图只需要最近日线，单次请求覆盖 250 日区间与上年末基准。
+    try:
+        response = _get("https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
+                        params={"param": f"{symbol},day,,,320,qfq"})
+        response.raise_for_status()
+        data = response.json()["data"][symbol]
+        bars = data.get("qfqday") or data["day"]
+        frame = pd.DataFrame([(bar[0], bar[2]) for bar in bars], columns=["date", "close"])
+        history = preview_history(frame)
+        if history["status"] == "ready":
+            return {**history, "source": "腾讯证券"}
+    except (requests.RequestException, KeyError, ValueError, TypeError, IndexError):
+        pass
+    return preview_history(dtf.fetch_daily(symbol, "qfq", min_rows=2))
+
+
+def preview_snapshot(row, quotes):
+    """从当前全市场快照补齐行情和同行，保留已筛选掉的同行供比较。"""
+    industry = row["行业"]
+    peers = quotes.iloc[:0]
+    if industry != "未分类":
+        peers = quotes[(quotes["行业"] == industry) & (quotes["代码"] != row["代码"])]
+    peers = peers[["代码", "名称", "最新价", "涨跌幅"]].rename(columns={
+        "代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change",
+    }).to_dict("records")
+    return {
+        "code": row["代码"], "market": row["市场"], "sector": industry, "peers": peers,
+        "quote": {field: float(row[field]) if pd.notna(row[field]) else None
+                  for field in ("最新价", "涨跌幅", "总市值", "流通市值", "成交额", "换手率", *QUOTE_FIELDS.values())},
+    }
 
 
 def format_amount(value):

@@ -3,4 +3,6 @@ plotly>=6.0
 streamlit>=1.46
 pandas>=2.2
 requests>=2.31
+ddgs>=9.0
+pypdf>=5.0
 tomli>=2.0; python_version < "3.11"

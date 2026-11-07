@@ -24,6 +24,7 @@ class SearchBudget:
     pages: int = 6
     sources: int = 40
     seconds: float = 180
+    recovery_pages: int = 3
 
 
 @dataclass
@@ -41,6 +42,9 @@ class SearchReport:
     trace: list = field(default_factory=list)
     queries_used: int = 0
     pages_used: int = 0
+    dimensions: list = field(default_factory=list)
+    dimension_answers: list = field(default_factory=list)
+    critical_gaps: Optional[list] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -48,16 +52,22 @@ class SearchReport:
     def format(self) -> str:
         lines = [f"研究搜索：{self.question}",
                  f"模式：{self.mode}｜状态：{self.status}｜停止原因：{self.stop_reason}",
-                 f"执行 {self.queries_used} 次查询、{self.pages_used} 次原文读取。"]
+                 f"执行 {self.queries_used} 次查询、{self.pages_used} 次读取尝试，"
+                 f"成功 {sum(d.get('read_status') == 'read' for d in self.sources)} 篇。"]
         if self.subquestions:
             lines.append("研究子问题：" + "；".join(self.subquestions))
+        for answer in self.dimension_answers:
+            lines.append(f"维度[{answer['dimension_id']}] {answer['status']}：{answer['answer']} "
+                         + ' '.join(f'[{sid}]' for sid in answer['evidence_ids'])
+                         + f"；限制：{answer.get('limitations', '')}")
         for doc in self.sources:
             if doc.get("relevant") is False:
                 continue
             # 同时保留旧的编号格式，兼容界面 extract_sources；W ID 在整个任务内稳定。
             number = doc["source_id"][1:]
-            lines.append(f"[{number}]《{doc['title']}》[{doc['source_id']}｜{doc['published'] or '时间未知'}"
+            lines.append(f"[{number}]《{doc['title']}》[{doc['source_id']}]｜{doc['published'] or '时间未知'}"
                          f"｜{doc['engine']}｜{doc['read_status']}｜{doc.get('time_status', 'unknown')}｜"
+                         f"{'原文资料' if doc.get('read_status') == 'read' else '待核验线索，不能支持事实结论'}｜"
                          f"{doc.get('excerpt') or doc['snippet']}({doc['url']})")
         for claim in self.claims:
             refs = " ".join(f"[{x['source_id']}]" for x in claim["evidence"])
@@ -67,7 +77,9 @@ class SearchReport:
         if self.conflicts:
             lines.append("来源冲突：" + "；".join(self.conflicts))
         if self.gaps:
-            lines.append("未解决的证据缺口：" + "；".join(self.gaps))
+            lines.append("待确认资料与不确定性：" + "；".join(self.gaps))
+        if self.critical_gaps:
+            lines.append("阻止关键结论成立的证据缺口：" + '；'.join(self.critical_gaps))
         lines.append("只依据上述实际来源回答；未读正文、日期未知和单一社交线索不能当作已核验事实。")
         return "\n".join(lines)
 
@@ -83,13 +95,21 @@ scope.days 是新闻窗口；time_status=background/unknown 的资料不能证�
 read_ids 只能使用实际来源 ID。claims.evidence.quote 必须逐字摘自已经成功读取的正文，
 不允许用搜索摘要冒充原文；text 是事实候选，不是投资结论。冲突无法解决时明确保留。
 source_topics 使用 scope.selected 中的合法 ID；不相关来源列入 irrelevant_ids。
+scope.research_dimensions 非空时，逐项回答这些维度的子问题，输出dimension_answers：
+[{"dimension_id":"合法ID","status":"supported|partial|missing","answer":"实质回答或具体缺口", "evidence_ids":["F1","W1"],"limitations":"限制"}]。
+局部已有证据来自scope.local_evidence，网页事实仍须先通过claims的原文引文核验。不能用同一段财报泛称所有维度都完成。
+未充分回答的维度应优先补搜；业务、行业、估值、事件、市场和技术有不同任务，不能仅因财报丰富就提前停止。
+仅evaluate阶段更新dimension_answers；plan阶段只规划，select_sources阶段只选择来源，避免反复重写完整分析。
+gaps保留所有未确认资料；另用critical_gaps列出会阻止当前关键结论成立的缺口。诚实说明局限并给出有条件判断可以是有效分析，不能要求所有未知都消失。
 done 只能在已经检索、阅读正文、关键子问题有引用支持且没有重要待确认问题时为 true。
 不要输出隐藏思维链，只返回简短动作目的和这个 JSON 对象：
 {"subquestions":["子问题"],"queries":[{"query":"查询","purpose":"要验证什么","freshness":"week"}],
 "read_ids":["W1"],"source_topics":{"W1":["tech"]},"irrelevant_ids":[],
 "claims":[{"text":"事实候选","status":"supported|conflicting|unverified",
 "evidence":[{"source_id":"W1","quote":"原文逐字摘录"}]}],
-"gaps":["尚缺什么证据"],"conflicts":["来源间的不一致"],"done":false}
+"dimension_answers":[{"dimension_id":"scope.research_dimensions中的id","status":"supported|partial|missing",
+"answer":"对该具体子问题的实质回答","evidence_ids":["F1","W1"],"limitations":"限制"}],
+"gaps":["尚缺什么资料"],"critical_gaps":["阻止关键结论成立的缺口"],"conflicts":["来源间的不一致"],"done":false}
 """
 
 
@@ -133,7 +153,7 @@ def _queries(value) -> list[dict]:
             seen.add(key)
             out.append({"query": query, "purpose": str(item.get("purpose") or "寻找相关来源")[:160]
                         if isinstance(item, dict) else "寻找相关来源"})
-            if isinstance(item, dict) and item.get("freshness") in {"day", "week", "month", "any"}:
+            if isinstance(item, dict) and item.get("freshness") in ("day", "week", "month", "any"):
                 out[-1]["freshness"] = item["freshness"]
     return out
 
@@ -152,7 +172,8 @@ def _validated_claims(value, docs: dict) -> list[dict]:
         if not isinstance(claim, dict) or not str(claim.get("text") or "").strip():
             continue
         evidence, seen = [], set()
-        for ref in claim.get("evidence") or []:
+        refs = claim.get('evidence')
+        for ref in refs if isinstance(refs, list) else []:
             if not isinstance(ref, dict):
                 continue
             sid, quote = str(ref.get("source_id") or ""), str(ref.get("quote") or "").strip()
@@ -174,12 +195,13 @@ def _validated_claims(value, docs: dict) -> list[dict]:
                   "conflicting" if requested == "conflicting" else
                   "multiple_sources" if len(hosts) > 1 else "single_source")
         out.append({"text": str(claim["text"]).strip()[:500], "status": status, "evidence": evidence})
-    return out[:16]
+    return out[:64]
 
 
 def research_search(question: str, *, config: Optional[dict] = None,
                     scope: Optional[dict] = None, freshness: str = "any",
                     seeds: Optional[list] = None, seed_sources: Optional[list] = None,
+                    seed_claims: Optional[list] = None,
                     search_fn: Optional[Callable] = None, read_fn: Optional[Callable] = None,
                     decision_fn: Optional[Callable] = None, on_progress: Optional[Callable] = None,
                     budget: Optional[SearchBudget] = None) -> SearchReport:
@@ -188,6 +210,7 @@ def research_search(question: str, *, config: Optional[dict] = None,
     search_fn = search_fn or search_raw
     read_fn = read_fn or (lambda url: tool_read_page(url, max_chars=12000))
     report = SearchReport(str(question).strip())
+    report.dimensions = list(scope.get('research_dimensions') or [])
     broad = scope.get("information_policy") == "broad"
     report.objective = "collect" if broad else "verify"
     required = _queries(scope.get("required_queries"))
@@ -276,8 +299,9 @@ def research_search(question: str, *, config: Optional[dict] = None,
                "snippet": str(item.get("snippet") or "")[:800], "published": str(item.get("published") or ""),
                "engine": str(item.get("engine") or "feed"), "body": body,
                "excerpt": _excerpt(body, question) if body else "",
-               "read_status": "read" if body else "not_read", "topics": list(item.get("topics") or []),
-               "relevant": True, "discovered_by": query,
+               "read_status": "read" if body else ("failed" if item.get("read_status") == "failed" else "not_read"),
+               "topics": list(item.get("topics") or []),
+               "relevant": item.get("relevant", True), "discovered_by": query,
                "date_origin": item.get("date_origin") or "search_metadata"}
         doc["time_status"] = time_status(doc["published"], query_freshness)
         docs[sid], urls[key] = doc, sid
@@ -285,16 +309,35 @@ def research_search(question: str, *, config: Optional[dict] = None,
 
     for item in seed_sources or []:
         add(item)
+    report.claims = _validated_claims(seed_claims, docs)
+    if report.dimensions and scope.get('prior_dimension_answers'):
+        from astock.ai.analysis_workflow import validate_dimension_answers
+        from astock.ai.evidence import with_web_evidence
+        report.dimension_answers = validate_dimension_answers(scope['prior_dimension_answers'], report.dimensions,
+                                                              with_web_evidence(scope.get('local_evidence') or {}, report.to_dict()))
     if decision_fn is None and str(cfg.get("api_key") or "").strip() and cfg.get("model"):
         def decision_fn(system, user):
             from astock.ai.ai_client import chat_once
             from astock.news.news_intel import llm_json
             def bounded_chat(*args, **kwargs):
-                kwargs["timeout"] = (5, max(1, min(25, deadline - time.monotonic())))
+                kwargs["timeout"] = (5, max(1, min(35 if report.dimensions else 25, deadline - time.monotonic())))
                 return chat_once(*args, **kwargs)
             return llm_json(cfg.get("provider_cfg") or {}, cfg["model"], cfg["api_key"],
-                            system, user, chat_fn=bounded_chat, max_tokens=2400)
+                            system, user, chat_fn=bounded_chat, max_tokens=6000 if report.dimensions else 2400)
     report.mode = "agent" if decision_fn else "basic"
+
+    seed_read_ids = {sid for sid, doc in docs.items() if doc['read_status'] == 'read'}
+
+    def dimensions_covered():
+        from astock.ai.analysis_workflow import coverage_summary
+        return coverage_summary(report.dimensions, report.dimension_answers)
+
+    def successful_reads():
+        return sum(d['read_status'] == 'read' and sid not in seed_read_ids for sid, d in docs.items())
+
+    def can_read():
+        successes = successful_reads()
+        return successes < budget.pages and report.pages_used < budget.pages + budget.recovery_pages
 
     def ask(phase: str):
         nonlocal decision_fn
@@ -305,14 +348,17 @@ def research_search(question: str, *, config: Optional[dict] = None,
         payload = {"phase": phase, "question": question, "scope": scope, "freshness": freshness,
                    "now": datetime.now().isoformat(timespec="seconds"),
                    "subquestions": report.subquestions, "sources": evidence,
+                   "dimension_answers": report.dimension_answers,
+                   "dimension_coverage": dimensions_covered(),
                    "previous_queries": sorted(queries_seen), "failures": report.trace[-12:],
                    "remaining": {"queries": budget.queries - report.queries_used,
-                                 "pages": budget.pages - report.pages_used},
+                                 "pages": max(0, budget.pages - successful_reads()),
+                                 "read_attempts": max(0, budget.pages + budget.recovery_pages - report.pages_used)},
                    "instruction": ("选择阶段只选择最多3个未读来源的 read_ids，兼顾各子问题与查询方向，优先窗口内原始资料；不下事实结论。"
                                    if phase == "select_sources" else
                                    "规划阶段至多3条初始查询；评估阶段先验证原文并决定补搜或停止。")}
         user = "<research_state>" + escape(json.dumps(payload, ensure_ascii=False)) + "</research_state>"
-        results = batch(lambda _: decision_fn(SYSTEM + (BROAD_POLICY if broad else ""), user), [None], 40)
+        results = batch(lambda _: decision_fn(SYSTEM + (BROAD_POLICY if broad else ""), user), [None], 45 if report.dimensions else 40)
         if not results or not results[0][0] or not isinstance(results[0][1], dict):
             record("degraded", detail="模型规划/核验不可用，使用基础检索与正文读取")
             report.mode, decision_fn = "degraded", None
@@ -335,9 +381,20 @@ def research_search(question: str, *, config: Optional[dict] = None,
         if decision.get("subquestions"):
             report.subquestions = _strings(decision["subquestions"])
         report.gaps = _strings(decision.get("gaps"))
+        report.critical_gaps = _strings(decision.get('critical_gaps')) if isinstance(decision.get('critical_gaps'), list) else list(report.gaps)
         report.conflicts = _strings(decision.get("conflicts"))
         update_sources(decision)
-        report.claims = _validated_claims(decision.get("claims"), docs)
+        new_claims = decision.get("claims") if isinstance(decision.get("claims"), list) else []
+        candidates = _validated_claims([*report.claims, *new_claims], docs)
+        report.claims = list({(c['text'], tuple(r['source_id'] for r in c['evidence'])): c
+                              for c in candidates}.values())
+        if report.dimensions:
+            from astock.ai.analysis_workflow import validate_dimension_answers
+            from astock.ai.evidence import with_web_evidence
+            registry = with_web_evidence(scope.get('local_evidence') or {}, report.to_dict())
+            values = decision.get('dimension_answers') if isinstance(decision.get('dimension_answers'), list) else []
+            report.dimension_answers = validate_dimension_answers(
+                [*report.dimension_answers, *values], report.dimensions, registry)
 
     decision = ask("plan")
     assess(decision)
@@ -367,8 +424,12 @@ def research_search(question: str, *, config: Optional[dict] = None,
         for task, (ok, value) in zip(queries, search_results):
             if ok:
                 before = len(docs)
+                # 为后续子问题/补搜预留来源容量，避免首条查询占满全部候选。
+                per_query = max(1, min(8, budget.sources // max(1, budget.queries)))
                 for row in value or []:
                     add(row, task.get("freshness"), task["query"])
+                    if not broad and len(docs) - before >= per_query:
+                        break
                 record("search", round=round_no, query=task["query"], purpose=task["purpose"],
                        count=len(docs) - before, status="ok" if value else "empty")
             else:
@@ -377,7 +438,7 @@ def research_search(question: str, *, config: Optional[dict] = None,
                        count=0, status="failed", error=value)
         # 先让模型看见搜索结果，再选择要读的原文；失败后使用时效/权威/方向覆盖兜底。
         selection = {}
-        if report.pages_used < budget.pages and any(d["read_status"] == "not_read" for d in docs.values()):
+        if can_read() and any(d["read_status"] == "not_read" for d in docs.values()):
             selection = ask("select_sources")
             update_sources(selection)
             record("select", round=round_no, read_ids=_strings(selection.get("read_ids"), 3))
@@ -403,11 +464,12 @@ def research_search(question: str, *, config: Optional[dict] = None,
         read_ids = []
         for sid in candidates:
             if (sid in read_ids or docs[sid]["read_status"] != "not_read"
-                    or report.pages_used >= budget.pages):
+                    or not can_read()):
                 continue
             read_ids.append(sid)
             report.pages_used += 1
-            if len(read_ids) >= 3:
+            remaining_successes = budget.pages - successful_reads()
+            if len(read_ids) >= min(3, remaining_successes):
                 break
         for sid in read_ids:
             record("read_start", round=round_no, source_id=sid, url=docs[sid]["url"])
@@ -417,23 +479,37 @@ def research_search(question: str, *, config: Optional[dict] = None,
                 docs[sid].update(body=text[:12000], excerpt=_excerpt(text, question), read_status="read")
             else:
                 docs[sid]["read_status"] = "failed"
+                docs[sid]["read_error"] = "timeout" if not ok and value == "timeout" else "reader_failed"
             record("read", round=round_no, source_id=sid, url=docs[sid]["url"],
-                   status=docs[sid]["read_status"])
+                   status=docs[sid]["read_status"], error=docs[sid].get("read_error", ""))
         decision = ask("evaluate")
         assess(decision)
         record("evaluate", round=round_no, claims=len(report.claims), gaps=list(report.gaps),
-               conflicts=list(report.conflicts), mode=report.mode, objective=report.objective)
+               conflicts=list(report.conflicts), mode=report.mode, objective=report.objective,
+               dimension_coverage=dimensions_covered() if report.dimensions else None)
         has_support = any(c["status"] in {"single_source", "multiple_sources"} for c in report.claims)
         pending_required = [q for q in required if re.sub(r"\s+", " ", q["query"]).casefold() not in queries_seen]
         if (decision.get("done") is True and report.queries_used and not pending_required
                 and broad and any(d.get("relevant") is not False for d in docs.values())):
             report.status, report.stop_reason = "collected", "information_covered"
             break
-        if (decision.get("done") is True and has_support and not report.gaps and report.queries_used
+        if (decision.get("done") is True and has_support and not report.critical_gaps and report.queries_used and dimensions_covered()['complete']
                 and not pending_required):
             report.status, report.stop_reason = "complete", "evidence_sufficient"
             break
         planned = _queries([*pending_required, *_queries(decision.get("queries"))])
+        # 读取失败后改查原始出处，不把剩余查询继续耗在同一批聚合链接上。
+        failed = [d for d in docs.values() if d['read_status'] == 'failed']
+        if failed and not broad and can_read():
+            recovery = []
+            if scope.get("code") and scope.get("name"):
+                recovery.append({"query": f"{scope['name']} {scope['code']} 财报 公告 site:cninfo.com.cn",
+                                 "purpose": "读取失败，补查公司原始披露", "freshness": "any"})
+            for doc in failed[-3:]:
+                title = re.sub(r"\s+-\s+[^-]+$", "", doc['title'])[:110]
+                recovery.append({"query": f'"{title}" -site:news.google.com',
+                                 "purpose": "按标题寻找可读取的发布站原文", "freshness": "any"})
+            planned = _queries([*recovery, *planned])
         unread = any(d["read_status"] == "not_read" for d in docs.values())
         if not planned and not decision_fn and round_no == 1 and not broad:
             # 基础降级仍读原文并尝试核对最重要事件，但不伪装成模型决策。
@@ -441,26 +517,32 @@ def research_search(question: str, *, config: Optional[dict] = None,
             planned = [{"query": f"{focus[:100]} 官方来源 核实", "purpose": "基础模式寻找原始出处"}]
         new_queries = any(re.sub(r"\s+", " ", task["query"]).casefold() not in queries_seen
                           for task in planned)
-        if not new_queries and (not unread or report.pages_used >= budget.pages):
+        if not new_queries and (not unread or not can_read()):
             report.stop_reason = "no_new_actions"
             break
-        if report.queries_used >= budget.queries and report.pages_used >= budget.pages:
+        if report.queries_used >= budget.queries and not can_read():
             report.stop_reason = "action_budget"
             break
     if not report.stop_reason:
         report.stop_reason = "round_budget"
+    blocking = []
+    coverage = dimensions_covered()
+    if coverage['missing']:
+        blocking.append('尚未充分回答的研究维度：' + '、'.join(coverage['missing']))
     missed = [q["query"] for q in required if re.sub(r"\s+", " ", q["query"]).casefold() not in queries_seen]
     if missed:
-        report.gaps.append("受预算限制尚未检索的指定来源：" + "；".join(missed))
+        blocking.append("受预算限制尚未检索的指定来源：" + "；".join(missed))
     if not decision_fn and not broad:
-        report.gaps = list(dict.fromkeys([*report.gaps, "未通过模型核验研究问题的证据充分性"]))
+        blocking.append("未通过模型核验研究问题的证据充分性")
     if not any(d["read_status"] == "read" for d in docs.values()):
-        report.gaps = list(dict.fromkeys([*report.gaps, "未成功读取原文，仅有搜索摘要或快讯线索"]))
+        blocking.append("未成功读取原文，仅有搜索摘要或快讯线索")
     if report.status != "complete" and not report.claims and not broad:
-        report.gaps = list(dict.fromkeys([*report.gaps, "尚无通过原文引文检查的事实候选"]))
+        blocking.append("尚无通过原文引文检查的事实候选")
     if not docs:
         report.status = "failed"
         report.stop_reason = "search_failed" if failures else "no_results"
+    report.critical_gaps = list(dict.fromkeys([*(report.critical_gaps if report.critical_gaps is not None else report.gaps), *blocking]))
+    report.gaps = list(dict.fromkeys([*report.gaps, *blocking]))
     record("finish", status=report.status, reason=report.stop_reason,
            queries=report.queries_used, pages=report.pages_used)
     return report

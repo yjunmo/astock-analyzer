@@ -11,8 +11,9 @@ from astock.ai import skill_store
 from astock.ui import state
 from astock.ui import ui_theme as ut
 from astock.analysis.analytics import build_snapshot
+from astock.analysis.indicators import compute_all
 from astock.ai.ai_agent import run_agent
-from astock.ai.ai_client import AIError, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE, chat_complete
+from astock.ai.ai_client import AIError, DEFAULT_MAX_TOKENS, DEFAULT_TEMPERATURE
 from astock.ai.ai_context import build_placeholders, build_research_context, parse_frontmatter, render_system_prompt
 from astock.analysis.backtest import DEFAULT_FEE_RATE, backtest_text, run_backtest, trades_df
 from astock.ui.charts import make_backtest_figure, make_figure, make_fundamental_figure
@@ -381,7 +382,7 @@ def _cached_news_digest(code6: str):
 
 def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                    data_key: str, code6: str = "", name: str = "",
-                   symbol: str = ""):
+                   symbol: str = "", period: str = 'daily', adjust: str = '', is_st: bool = False):
     st.divider()
     hcol, bcol = st.columns([3, 1])
     hcol.subheader("AI 研究助手")
@@ -420,9 +421,12 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                                  key=f"ai_validity_{code6}")
     quick_disabled = not (ai["api_key"] and ai["model"])
     action_defs = {
+        "earnings": ("业绩解读", """<task type="earnings">
+解读最新财报。先核对报告期和口径，分析单季度营收/归母及扣非净利同比与环比、毛利/费用对利润的影响、并购并表与内生增长、现金流/应收/存货、实际业绩相对预告和一致预期。用“业绩拆解、盈利质量、下一跟踪指标、待确认问题”组织正文。缺资料时给明确缺口，不能用技术指标代替，不强行预测股价。
+</task>"""),
         "panorama": ("全景研判", """<task type="panorama">
-回答当前标的是否具备值得继续跟踪的研究价值。先给3—5条核心结论，再列支持证据、反证与数据缺口；给出乐观/基准/悲观三种情景的触发条件和失效条件。只引用研究上下文中的证据编号。
-若存在[P1]，必须单列“个人假设审计”，说明哪些证据支持、冲突或仍未验证，不能迎合原假设。
+综合研究当前公司：经营价值、当前估值和短期交易条件分别如何？覆盖业务与竞争、经营质量、估值预期、行业产业链、事件、治理风险、市场及多周期技术，围绕最重要的2—4个驱动解释相互关系和反证。区分长期价值与短期波动，不按指标数量投票。条件与必要输入齐备时才给情景或估值计算，不硬填股价区间。引用实际证据，并指出哪些缺口会改变核心判断。
+仅当[P1]含实际个人假设内容时审计其支持、冲突和待验证证据；空白占位不单列章节，不能迎合原假设。
 </task>"""),
         "trade": ("交易计划", """<task type="trade_plan">
 把现有证据转换为条件化交易计划。分别给出观察、试仓、加仓、减仓/退出条件；价位只能来自[T1]/[T3]/[K1]，并说明T+1、跳空和流动性风险。数据不足时不要硬给精确仓位或价格。
@@ -436,7 +440,7 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
 </task>"""),
     }
     action = None
-    action_cols = st.columns(4)
+    action_cols = st.columns(len(action_defs))
     for col, (key, (label, _)) in zip(action_cols, action_defs.items()):
         if col.button(label, disabled=quick_disabled, key=f"ai_action_{key}",
                       width="stretch"):
@@ -480,10 +484,11 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
     if research_task_id:
         research_services.update_research_task(
             research_task_id, "search", evidence_count=len(local_sources),
-            coverage=min(100.0, len(local_sources) / 8 * 100.0))
+            coverage=0.0)
     # 首次从无新闻切换到新闻催化时刷新系统上下文，但保留对话历史。
     personal_thesis = research_store.latest_thesis(code6) if code6 else None
-    evidence_key = (code6, getattr(digest, "fetched_at", "") if digest else "",
+    evidence_key = ("evidence-workflow-v4", code6, data_key, ai["skill_name"], web_mode,
+                    getattr(digest, "fetched_at", "") if digest else "",
                     (personal_thesis or {}).get("id"))
     if st.session_state.get("ai_evidence_key") != evidence_key:
         for key in ("ai_system", "ai_context_message", "ai_meta", "ai_extra_params"):
@@ -513,24 +518,31 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                 effort = str(meta.get("reasoning_effort", "")).strip().lower()
                 if effort:
                     extra_params["reasoning_effort"] = effort
-                # 联网模式：市场环境/新闻等时效信息全部交由 AI 自主搜索，
-                # 不再本地预采集，避免重复工作与额外等待
-                market_ctx = ("（联网研究模式：共享搜索 Agent 会提供市场环境、新闻与板块动态的实际证据。"
-                              "请根据 web_evidence 回答，缺失时明确说明）"
-                              if web_mode != "off"
-                              else state.load_market_ctx(code6, name))
                 # 装配期涉及多路行情/基本面/市场环境请求，akshare 部分请求
                 # 不带超时，接口异常时会无限挂起导致「点击无反应」：
                 # 兜底默认超时，失败自动降级为对应占位文本，不阻断对话
                 with dtf.default_request_timeout(15.0):
                     fund_snap = state.fetch_fundamentals(code6)
+                    company_context = state.company_context_cached(code6)
+                    from astock.research.research_analytics import relative_performance_text
+                    daily_df = df_all if period == 'daily' else None
+                    if daily_df is None:
+                        try:
+                            daily_df = compute_all(state.load_history(symbol, 'daily', adjust, is_st), period='daily')
+                        except Exception:
+                            daily_df = None
+                    benchmark, benchmark_id = state.benchmark_cached(code6)
+                    market_ctx = relative_performance_text(daily_df, benchmark, benchmark_id, adjust)
+                    if web_mode == 'off':
+                        market_ctx = '\n'.join(x for x in (market_ctx, state.load_market_ctx(code6, name)) if x)
                     bt_default = get_or_build_backtest(
                         data_key, df_all, "score", DEFAULT_FEE_RATE)
-                    mp = get_or_build_multi(data_key, df_all,
+                    daily_key = state.history_key(symbol, 'daily', adjust, is_st)
+                    mp = get_or_build_multi(daily_key, daily_df,
                                             symbol=symbol,
-                                            name=name) if code6 else None
-                    st_rep = (get_or_build_shortterm(data_key, df_all)
-                              if code6 else None)
+                                            name=name) if code6 and daily_df is not None and len(daily_df) >= 2 else None
+                    st_rep = (get_or_build_shortterm(daily_key, daily_df)
+                              if code6 and daily_df is not None and len(daily_df) >= 2 else None)
                     placeholders = build_placeholders(
                         df_all, result, snapshot, bars_tail=bars_tail,
                         market_ctx=market_ctx,
@@ -539,7 +551,8 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                         multi_period=multi_period_text(mp),
                         shortterm=shortterm.shortterm_text(st_rep),
                         news=news_text,
-                        personal_thesis=research_store.thesis_context(code6))
+                        personal_thesis=research_store.thesis_context(code6), bar_period=period)
+                    placeholders.update(company_context)
                 st.session_state["ai_system"] = render_system_prompt(body)
                 st.session_state["ai_context_message"] = build_research_context(
                     placeholders, instrument=f"{name}（{code6}）")
@@ -580,12 +593,13 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
         note_md = box.empty()
         src_md = box.empty()
         holder = box.empty()
-        status = (box.status("🤔 模型思考中…", expanded=False)
-                  if (show_think and web_mode == "off") else None)
-        think_md = status.empty() if status else None
-        buf_r: list = []
         buf_a: list = []
         sources: list = list(st.session_state.get("ai_local_sources") or [])
+        search_report = None
+        citation_validation = None
+        analysis_plan = None
+        analysis_review = None
+        supplemental_evidence = {}
         notes: list = []
         err = None
 
@@ -596,71 +610,53 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
         try:
             workflow.update(label="研究工作流：搜索证据与提取事实…", state="running")
             if research_task_id:
-                research_services.update_research_task(research_task_id, "cross_validate")
-            if web_mode != "off":
-                # 联网 Agent：分步状态 + 整段正文 + 来源列表
-                for kind, piece in run_agent(
-                        ai["provider_cfg"], ai["model"], ai["api_key"],
-                        payload, extra_params=extra_params, mode=web_mode,
-                        budget=max_tokens, temperature=temperature,
-                        on_progress=lambda event: workflow.write(progress_text(event))):
-                    if kind == "status":
-                        notes.append(piece)
-                        _flush_notes()
-                        holder.markdown("▌")
-                    elif kind == "sources":
-                        remote = list(piece or [])
-                        seen_urls = {u for _, u in sources}
-                        sources.extend((t, u) for t, u in remote if u not in seen_urls)
-                    elif kind == "answer":
-                        buf_a.append(piece)
-                        holder.markdown(piece)
-            else:
-                gen = chat_complete(ai["provider_cfg"], ai["model"],
-                                    ai["api_key"], payload,
-                                    temperature=temperature,
-                                    max_tokens=max_tokens,
-                                    extra_params=extra_params)
-                for kind, piece in gen:
-                    if kind == "reasoning":
-                        buf_r.append(piece)
-                        if think_md is not None:
-                            think_md.markdown("".join(buf_r)[-6000:])
-                    elif kind == "content":
-                        buf_a.append(piece)
-                        holder.markdown("".join(buf_a) + "▌")
-                    elif kind == "restart":
-                        # 零正文即被截断：清空已渲染内容，按更大预算重新开始
-                        buf_r.clear()
-                        buf_a.clear()
-                        notes.append(piece)
-                        _flush_notes()
-                        if status is not None:
-                            status.update(label=piece, state="running",
-                                          expanded=True)
-                            think_md.markdown("")
-                        holder.markdown("")
-                    elif kind == "notice":
-                        notes.append(piece)
-                        _flush_notes()
+                research_services.update_research_task(research_task_id, "search")
+            for kind, piece in run_agent(
+                    ai["provider_cfg"], ai["model"], ai["api_key"],
+                    payload, extra_params=extra_params, mode=web_mode,
+                    budget=max_tokens, temperature=temperature,
+                    on_progress=lambda event: workflow.write(progress_text(event))):
+                if kind == "status":
+                    notes.append(piece)
+                    _flush_notes()
+                    holder.markdown("▌")
+                elif kind == "analysis_plan":
+                    analysis_plan = piece
+                    workflow.write("研究主问题：" + piece["core_question"])
+                    workflow.write("研究维度：" + "；".join(d["label"] + "：" + d["question"] for d in piece["dimensions"]))
+                    if research_task_id:
+                        research_services.update_task_plan(research_task_id, piece)
+                elif kind == "analysis_brief":
+                    workflow.write(f"综合判断：已整理 {len(piece.get('drivers', []))} 个关键驱动")
+                elif kind == 'supplemental_evidence':
+                    supplemental_evidence.update(piece)
+                    workflow.write(f'已取得 {len(piece)} 家候选同业的独立对照数据，可比性仍需结合业务判断')
+                elif kind == "analysis_review":
+                    analysis_review = piece
+                    workflow.write(f"问题证据覆盖 {piece['coverage']:.0f}% · " +
+                                   ("审查通过" if piece["complete"] else "仍有待解决的分析问题"))
+                    labels = {d['id']: d['label'] for d in piece['plan']['dimensions']}
+                    for item in piece.get('dimension_answers', []):
+                        workflow.write(labels[item['dimension_id']] + '：' + item['status'] + ' · ' + item['answer'])
+                elif kind == "research_report":
+                    search_report = piece
+                elif kind == "validation":
+                    citation_validation = piece
+                elif kind == "sources":
+                    remote = list(piece or [])
+                    seen_urls = {u for _, u in sources}
+                    sources.extend((t, u) for t, u in remote if u not in seen_urls)
+                elif kind == "answer":
+                    buf_a.append(piece)
+                    holder.markdown(piece)
         except Exception as e:
             err = str(e) if isinstance(e, AIError) else f"{type(e).__name__}: {e}"
 
         answer = "".join(buf_a)
-        reasoning = "".join(buf_r)
         if research_task_id and answer:
             research_services.update_research_task(research_task_id, "conflicts")
         if answer:
             holder.markdown(answer)
-        if status is not None:
-            if reasoning:
-                think_md.markdown(reasoning[-6000:])
-            status.update(
-                label="模型推理（调试信息）" if reasoning else "本次无调试推理信息",
-                state="error" if (err and not answer) else "complete",
-                expanded=bool(reasoning) and not answer,
-            )
-
         if sources:
             src_md.markdown(ut.sources_block(sources), unsafe_allow_html=True)
 
@@ -673,19 +669,25 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
                 baseline = snapshot.get("price") if isinstance(snapshot, dict) else None
                 if not baseline and df_all is not None and not df_all.empty:
                     baseline = float(df_all["close"].iloc[-1])
-                stages = {name_: "complete" for name_ in (
+                stages = {name_: "pending" for name_ in (
                     "plan", "search", "extract", "cross_validate", "conflicts",
                     "impact_path", "scenarios", "invalidation", "monitoring")}
-                stages["subquestions"] = research_plan
+                stages["subquestions"] = [d['question'] for d in analysis_plan['dimensions']] if analysis_plan else research_plan
+                stages["analysis_plan"] = analysis_plan
+                stages['supplemental_evidence'] = supplemental_evidence
                 stages["usage"] = {"model": ai.get("model") or "",
                                    "context_chars": sum(len(str(x.get("content", ""))) for x in payload),
                                    "answer_chars": len(answer), "source_count": len(sources)}
+                from astock.ai.evidence import context_evidence
+                evidence_registry, _ = context_evidence(payload)
+                evidence_registry.update(supplemental_evidence)
                 run_id = research_services.archive_research_run(
                     code6, name, user_q, answer, model=ai.get("model") or "",
                     task_type=action or "custom", sources=sources,
                     baseline_price=baseline, stage_state=stages,
                     project_id=project_map[project_label], valid_days=int(validity_days),
-                    task_id=research_task_id)
+                    task_id=research_task_id, evidence_registry=evidence_registry,
+                    search_report=search_report, citation_validation=citation_validation)
                 rows = research_services.list_research_runs(code6, limit=1)
                 structured = (rows[0] if rows and rows[0]["id"] == run_id else None)
             except Exception as archive_error:  # noqa: BLE001
@@ -698,11 +700,13 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
             if structured:
                 state_label = "正式结论" if structured["status"] == "complete" else "不完整草稿"
                 workflow.update(
-                    label=f"研究工作流完成 · {state_label} #{run_id} · 证据覆盖 {structured['coverage']:.0f}%",
+                    label=f"研究工作流结束 · {state_label} #{run_id} · 引用可核验率 {structured['coverage']:.0f}%" +
+                          (f" · 问题证据覆盖 {analysis_review['coverage']:.0f}%" if analysis_review else ""),
                     state="complete", expanded=structured["status"] != "complete")
                 if structured["status"] != "complete":
                     try:
-                        missing = json.loads(structured["structured_json"]).get("missing_fields", [])
+                        parsed = json.loads(structured["structured_json"])
+                        missing = [*parsed.get("missing_fields", []), *parsed.get("verification", {}).get("gaps", [])]
                     except Exception:
                         missing = []
                     workflow.write("仍缺少：" + ("、".join(missing) if missing else "结构化字段或有效引用"))
@@ -724,11 +728,9 @@ def render_ai_chat(ai: dict, df_all, result: dict, snapshot: dict,
             workflow.update(label="研究任务未生成有效结论", state="error")
 
         entry = {"role": "assistant", "content": answer}
-        if reasoning:
-            entry["reasoning"] = reasoning
         if sources:
             entry["sources"] = sources
-        if answer or reasoning:
+        if answer:
             msgs.append(entry)
         if err:
             note = f"> ⚠️ {'流式输出中断' if answer else 'AI 调用失败'}：{err}"
@@ -759,8 +761,9 @@ def render_tech_panel(ai: dict, bundle: dict):
         "overview": "综合概览", "multi": "多周期", "fundamental": "基本面",
         "backtest": "策略回测", "assistant": "AI 研究助手",
     }
+    st.session_state.setdefault("tech_view", "overview")
     view = st.segmented_control(
-        "研究模块", list(views), key="tech_view", default="overview",
+        "研究模块", list(views), key="tech_view",
         format_func=lambda x: views[x], label_visibility="collapsed",
         width="stretch") or "overview"
     if view == "overview":
@@ -777,4 +780,5 @@ def render_tech_panel(ai: dict, bundle: dict):
         render_skill_editor()
         render_ai_chat(ai, df_all, result, bundle["snap"], data_key,
                        code6=code6, name=bundle["name"],
-                       symbol=bundle["symbol"])
+                       symbol=bundle["symbol"], period=bundle['period'],
+                       adjust=bundle['adjust'], is_st=bundle['is_st'])

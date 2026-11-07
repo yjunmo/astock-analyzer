@@ -134,7 +134,7 @@ def thesis_evidence(thesis_id: int) -> list[dict]:
 
 # ---------------------------------------------------------------- AI 研究任务与复盘
 
-_CITATION_RE = re.compile(r"\[(?:T\d+|F\d+|B\d+|S\d+|N\d+|P\d+|K\d+|W\d+)\]")
+_CITATION_RE = re.compile(r"\[(?:T\d+|M\d+|F\d+|B\d+|S\d+|N\d+|P\d+|K\d+|W\d+)\]")
 
 
 def build_research_plan(question: str, task_type: str = "custom") -> list[str]:
@@ -142,13 +142,15 @@ def build_research_plan(question: str, task_type: str = "custom") -> list[str]:
     common = ["哪些已核验事实与问题直接相关？", "证据之间是否独立、冲突或只是转载？",
               "事实通过什么路径影响收入、利润、现金流或估值？", "什么事实会推翻判断？"]
     specific = {
+        "earnings": ["单季度业绩同比、环比如何变化？", "毛利率、费用和并购分别如何影响利润？",
+                     "现金流、应收、存货是否支持盈利质量？", "相对预告与一致预期是否超预期？"],
         "panorama": ["技术、基本面、事件与市场环境是否同向？"],
         "trade": ["可执行条件、关键价位和 T+1 风险是什么？"],
         "risk": ["最强反证、尾部风险与数据偏差是什么？"],
         "catalyst": ["催化是否已确认、何时兑现、是否已被价格反映？"],
     }.get(task_type, [f"如何用现有证据回答：{str(question)[:120]}？"])
-    return [*specific, *common, "乐观、基准、悲观情景各自的触发器和有效期是什么？",
-            "下一步应监控哪些指标与事件？"]
+    scenarios = [] if task_type == "earnings" else ["乐观、基准、悲观情景各自的触发器和有效期是什么？"]
+    return [*specific, *common, *scenarios, "下一步应监控哪些指标与事件？"]
 
 
 RESEARCH_STAGES = ("plan", "search", "extract", "cross_validate", "conflicts",
@@ -245,6 +247,16 @@ def list_research_tasks(symbol: str = "", limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def update_task_plan(task_id: int, plan: dict) -> None:
+    dimensions = plan.get('dimensions') or []
+    questions = [d['question'] for d in dimensions]
+    statuses = [{'question': d['question'], 'dimension_id': d['id'], 'required_stage': 'cross_validate', 'status': 'pending'}
+                for d in dimensions]
+    with store.connection() as conn:
+        conn.execute('UPDATE research_tasks SET subquestions_json=?,subquestion_status_json=?,updated_at=? WHERE id=?',
+                     (json.dumps(questions, ensure_ascii=False), json.dumps(statuses, ensure_ascii=False), _now(), int(task_id)))
+
+
 def structure_answer(answer: str, task_type: str = "custom") -> dict:
     text = str(answer or "")
     citations = list(dict.fromkeys(_CITATION_RE.findall(text)))
@@ -258,8 +270,8 @@ def structure_answer(answer: str, task_type: str = "custom") -> dict:
         "task_type": task_type,
         "citations": citations,
         "headings": headings,
-        "supporting_facts": section(["支持证据", "支持事实", "核心依据"]),
-        "opposing_facts": section(["反证", "反对事实", "反对证据", "风险审计", "主要风险"]),
+        "supporting_facts": section(["支持证据", "支持事实", "核心依据", "业绩拆解", "综合分析"]),
+        "opposing_facts": section(["反证", "反对事实", "反对证据", "风险审计", "主要风险", "盈利质量", "证据冲突与风险"]),
         "invalidation": section(["失效条件", "推翻条件"]),
         "next_metrics": section(["下一验证节点", "下一跟踪指标", "跟踪指标", "后续监控"]),
         "bull_case": section(["乐观情景"]),
@@ -268,10 +280,17 @@ def structure_answer(answer: str, task_type: str = "custom") -> dict:
         "unknowns": section(["数据缺口", "待确认问题", "尚未确认"]),
         "direction": direction_match.group(1) if direction_match else "",
     }
-    required = ("direction", "supporting_facts", "opposing_facts", "invalidation", "next_metrics",
-                "bull_case", "base_case", "bear_case", "unknowns")
-    structured["missing_fields"] = [k for k in required if not structured[k]]
-    structured["complete"] = not structured["missing_fields"] and bool(citations)
+    required = ["supporting_facts", "opposing_facts", "next_metrics", "unknowns"]
+    if task_type in {"panorama", "trade", "risk", "trade_plan", "risk_audit"}:
+        required += ["direction", "invalidation"]
+    def substantive(key):
+        value = _CITATION_RE.sub("", structured[key])
+        value = re.sub(r"[\s*#\-。；：:（）()]", "", value)
+        return bool(value) and value not in {"数据不足", "数据缺失", "待核验", "尚未确认"}
+    structured["missing_fields"] = [k for k in required if not substantive(k)]
+    structured["format_complete"] = not structured["missing_fields"]
+    # 格式通过不代表证据通过，归档必须再依据实际上下文核验。
+    structured["complete"] = False
     return structured
 
 
@@ -280,13 +299,47 @@ def archive_research_run(symbol: str, name: str, question: str, answer: str,
                          sources=None, baseline_price: Optional[float] = None,
                          project_id: Optional[int] = None,
                          stage_state: Optional[dict] = None,
-                         prompt_version: str = "evidence-workflow-v2",
-                         valid_days: int = 30, task_id: Optional[int] = None) -> int:
+                         prompt_version: str = "evidence-workflow-v4",
+                         valid_days: int = 30, task_id: Optional[int] = None,
+                         evidence_registry: Optional[dict] = None,
+                         search_report: Optional[dict] = None,
+                         citation_validation: Optional[dict] = None) -> int:
     structured = structure_answer(answer, task_type)
-    evidence = structured["citations"]
+    from astock.ai.evidence import audit_citations, with_web_evidence
+    registry = with_web_evidence(evidence_registry or {}, search_report)
+    remote_report = search_report if search_report and search_report.get('status') != 'local_only' else None
+    verification = audit_citations(answer, registry, remote_report)
+    quality = (citation_validation or {}).get('analysis_quality') or {}
+    if quality:
+        structured['analysis_quality'] = quality
+        verification['complete'] = verification['complete'] and quality.get('complete', False)
+    if citation_validation and not citation_validation.get("complete"):
+        verification["complete"] = False
+        verification["coverage"] = min(verification["coverage"], citation_validation.get("coverage", 0))
+        verification["gaps"] = list(dict.fromkeys([*verification['gaps'], *citation_validation.get('gaps', [])]))
+    structured["verification"] = verification
+    structured['evidence_catalog'] = {sid: dict(registry[sid]) for sid in verification['valid_citations'] if sid in registry}
+    structured["complete"] = structured["format_complete"] and verification["complete"]
+    evidence = list(structured["citations"])
     for title, url in sources or []:
         evidence.append({"title": title, "url": url})
-    coverage = min(100.0, len(structured["citations"]) / 8.0 * 100.0)
+    coverage = verification["coverage"]
+    stages = dict(stage_state or {})
+    for stage in RESEARCH_STAGES:
+        stages[stage] = "complete" if structured["complete"] else "needs_review"
+    if quality:
+        stages.update(plan='complete' if quality.get('plan') else 'needs_review',
+                      extract='complete' if verification['valid_citations'] else 'needs_review',
+                      impact_path='complete' if quality.get('brief', {}).get('complete') else 'needs_review',
+                      monitoring='complete' if structured.get('next_metrics') else 'needs_review',
+                      scenarios='complete' if structured.get('base_case') else 'not_required')
+    stages.update(search=('skipped' if search_report and search_report.get('status') == 'local_only' else
+                          "complete" if not search_report or search_report.get("status") == "complete" else "needs_review"),
+                  cross_validate="complete" if verification["complete"] else "needs_review",
+                  archive="complete" if structured["complete"] else "needs_review")
+    if search_report:
+        stages["search_report"] = {**search_report, "sources": [
+            {k: v for k, v in doc.items() if k != "body"} for doc in search_report.get("sources", [])]}
     created = datetime.now()
     valid_until = (created.date() + timedelta(days=valid_days)).isoformat()
     structured["valid_until"] = valid_until
@@ -299,7 +352,7 @@ def archive_research_run(symbol: str, name: str, question: str, answer: str,
                             question, model, prompt_version, answer,
                             json.dumps(structured, ensure_ascii=False),
                             json.dumps(evidence, ensure_ascii=False),
-                            json.dumps(stage_state or {}, ensure_ascii=False), coverage,
+                            json.dumps(stages, ensure_ascii=False), coverage,
                             "complete" if structured["complete"] else "incomplete",
                             baseline_price, created.strftime("%Y-%m-%d"),
                             valid_until, _now(), task_id))
@@ -323,6 +376,7 @@ def archive_research_run(symbol: str, name: str, question: str, answer: str,
                               threshold, _now(), _now()))
         if task_id:
             unresolved = [structured.get("unknowns")] if structured.get("unknowns") else []
+            unresolved.extend(verification["gaps"])
             source_urls = [url for _, url in (sources or []) if url]
             conflict_count = 0
             if source_urls:
@@ -336,17 +390,18 @@ def archive_research_run(symbol: str, name: str, question: str, answer: str,
                 "SELECT subquestion_status_json FROM research_tasks WHERE id=?", (int(task_id),)
             ).fetchone()
             sub_status = _json(task_row["subquestion_status_json"], []) if task_row else []
+            dimension_status = {d['dimension_id']: d['status'] for d in quality.get('dimension_answers', [])}
             for item in sub_status or []:
-                item["status"] = "complete" if structured["complete"] else "needs_review"
-            final_stages = {x: "complete" for x in RESEARCH_STAGES}
-            if not structured["complete"]:
-                final_stages["archive"] = "needs_review"
+                item["status"] = ('complete' if dimension_status.get(item.get('dimension_id')) == 'supported' else 'needs_review') if quality else (
+                    "complete" if structured["complete"] else "needs_review")
+            final_stages = {x: stages.get(x, "complete" if structured["complete"] else "needs_review")
+                            for x in RESEARCH_STAGES}
             conn.execute("""UPDATE research_tasks SET status=?,current_stage='archive',
               stage_json=?,evidence_count=?,coverage=?,conflict_count=?,unresolved_json=?,
               subquestion_status_json=?,run_id=?,updated_at=? WHERE id=?""",
                          ("complete" if structured["complete"] else "incomplete",
                           json.dumps(final_stages, ensure_ascii=False),
-                          len(evidence), coverage, conflict_count,
+                          len(verification["valid_citations"]), coverage, conflict_count,
                           json.dumps(unresolved, ensure_ascii=False),
                           json.dumps(sub_status or [], ensure_ascii=False),
                           run_id, _now(), int(task_id)))

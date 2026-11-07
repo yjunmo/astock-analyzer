@@ -929,10 +929,17 @@ def _strip_html(raw: str) -> str:
 
 
 def _extract_pdf_text(data: bytes) -> str:
-    """使用系统 pdftotext 提取公告 PDF，并把换页符转为可引用页码。"""
+    """pdftotext 优先，无系统二进制时使用 pypdf，保留页码。"""
     binary = shutil.which("pdftotext")
     if not binary:
-        return ""
+        try:
+            from io import BytesIO
+            from pypdf import PdfReader
+            reader = PdfReader(BytesIO(data))
+            return "\n\n".join(f"[PDF第{i}页]\n{text}" for i, page in enumerate(reader.pages[:30], 1)
+                                if (text := (page.extract_text() or "").strip()))
+        except Exception:
+            return ""
     src = dst = ""
     try:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
@@ -945,7 +952,7 @@ def _extract_pdf_text(data: bytes) -> str:
         with open(dst, "r", encoding="utf-8", errors="ignore") as f:
             raw = f.read()
         pages = []
-        for idx, page in enumerate(raw.split("\f")[:12], 1):
+        for idx, page in enumerate(raw.split("\f")[:30], 1):
             clean = re.sub(r"[ \t]+", " ", page)
             clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
             if clean:
@@ -967,6 +974,18 @@ def tool_read_page(url: str, max_chars: int = READ_PAGE_MAX_CHARS) -> str:
     url = (url or "").strip()
     if not url.startswith(("http://", "https://")):
         return "读取失败：仅支持 http(s) 链接。"
+    from urllib.parse import urlsplit
+    if urlsplit(url).hostname == "news.google.com":
+        try:
+            response = _engine_get(url, READ_PAGE_TIMEOUT, {"User-Agent": "Mozilla/5.0"})
+            response.raise_for_status()
+            target = str(getattr(response, "url", "") or "")
+            if target.startswith(("http://", "https://")) and urlsplit(target).hostname != "news.google.com":
+                url = target
+            else:
+                return "读取失败：Google新闻聚合链接未解析为原始报道，请按标题检索发布站点。"
+        except Exception as exc:
+            return f"读取失败：Google新闻原站解析失败（{type(exc).__name__}），请按标题补搜。"
     if twitter_backend.tweet_id(url):
         started = _time.monotonic()
         try:
@@ -1008,7 +1027,7 @@ def tool_read_page(url: str, max_chars: int = READ_PAGE_MAX_CHARS) -> str:
     if "html" not in ctype and "text" not in ctype:
         return f"读取失败：该链接非网页内容（{ctype.split(';')[0]}）。"
     text = _strip_html(resp.text)
-    if len(text) < 40:
+    if len(text) < 40 or re.search(r"(?i)^(?:access denied|just a moment|verify you are human|enable javascript)", text):
         return "读取失败：页面无可提取正文（可能需要浏览器渲染）。"
     tail = "\n…(正文过长已截断)" if len(text) > max_chars else ""
     return f"【{url}】正文节选：\n{text[:max_chars]}{tail}"

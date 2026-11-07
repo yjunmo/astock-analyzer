@@ -45,6 +45,50 @@ def fetch_benchmark(code6: str, ak_mod=None) -> tuple[pd.DataFrame, str]:
     return pd.DataFrame(), ""
 
 
+def compare_recent_performance(stock_df: pd.DataFrame, benchmark_df: pd.DataFrame, windows=WINDOWS) -> list[dict]:
+    """用股票日线的同一开始、结束日期计算指数对照；缺端点就不外推。"""
+    def prices(frame):
+        if frame is None or not {'date', 'close'} <= set(frame.columns):
+            return pd.Series(dtype=float)
+        out = frame[['date', 'close']].copy()
+        out['date'] = pd.to_datetime(out['date'], errors='coerce').dt.normalize()
+        out['close'] = pd.to_numeric(out['close'], errors='coerce')
+        return (out.dropna().loc[lambda d: (d['close'] > 0) & d['close'].map(math.isfinite)]
+                .sort_values('date').drop_duplicates('date', keep='last').set_index('date')['close'])
+
+    stock, benchmark = prices(stock_df), prices(benchmark_df)
+    if stock.empty or stock.index[-1] not in benchmark.index:
+        return []
+    end = stock.index[-1]
+    result = []
+    for n in windows:
+        if n <= 0 or n >= len(stock):
+            continue
+        start = stock.index[-n - 1]
+        if start not in benchmark.index:
+            continue
+        sret = (stock.loc[end] / stock.loc[start] - 1) * 100
+        bret = (benchmark.loc[end] / benchmark.loc[start] - 1) * 100
+        result.append({'window': n, 'start': start.date().isoformat(), 'end': end.date().isoformat(),
+                       'stock_return': round(float(sret), 4), 'benchmark_return': round(float(bret), 4),
+                       'excess_pp': round(float(sret - bret), 4)})
+    return result
+
+
+def relative_performance_text(stock_df, benchmark_df, symbol, adjust='') -> str:
+    rows = compare_recent_performance(stock_df, benchmark_df)
+    if not rows:
+        return ''
+    basis = {'qfq': '前复权', 'hfq': '后复权'}.get(adjust, '不复权')
+    lines = [f'相对市场表现：个股{basis}日收盘与新浪指数{symbol}日收盘，同起止交易日；为价格收益，非总收益。']
+    for row in rows:
+        lines.append(f"近{row['window']}个交易日（{row['start']}至{row['end']}）："
+                     f"个股{row['stock_return']:+.2f}%，基准{row['benchmark_return']:+.2f}%，"
+                     f"差{row['excess_pp']:+.2f}个百分点。")
+    lines.append('大盘基准不能代表个股细分行业；同向下跌或相对弱势只描述表现，不能独立证明某事件是涨跌原因。')
+    return '\n'.join(lines)
+
+
 def compute_event_study(stock_df: pd.DataFrame, event_date: str,
                         benchmark_df: Optional[pd.DataFrame] = None) -> dict:
     """事件日起严格向后计算收益，不用事件之后的信息选择事件。"""
