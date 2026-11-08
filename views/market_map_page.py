@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -11,6 +12,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from astock.market import market_map as mm
+from astock.market.industry_taxonomy import UNCLASSIFIED_INDUSTRY, UNMAPPED_INDUSTRY, industry_parent
 from astock.paths import PROJECT_ROOT
 from astock.research import research_store
 from astock.ui import ui_theme as ut
@@ -37,6 +39,8 @@ def _load_industries():
         mapping, source = mm.fetch_industries()
     except Exception:
         return previous, previous_source
+    if previous and previous_source == "东方财富行业" and source == "新浪行业":
+        return previous, f"{previous_source}（缓存）"
     if mapping:
         # 采集不完整时保留上次已知行业，不用失败结果覆盖成功缓存。
         if source == previous_source:
@@ -148,24 +152,113 @@ def _handle_preview_event(event, filtered, quotes, meta):
     return preview
 
 
-def _summary(stats):
-    n = stats["count"] or 1
+def _sidebar_summary(stats, market, covered, meta, stale):
+    counts = (("上涨", "up"), ("下跌", "down"), ("平盘", "flat"))
+    cells = "".join(f'<div><span>{label}</span><b class="{key}">{stats[key]:,}</b></div>'
+                    for label, key in counts)
+    bar = "".join(f'<i style="width:{stats[key] / (stats["count"] or 1):.2%};background:var(--{key})"></i>'
+                  for _, key in counts if stats[key])
+    snapshot = "沿用上次快照" if stale else "行情覆盖"
     return (
-        '<div class="cloud-summary">'
-        '<div class="cloud-overview"><span class="cloud-eyebrow">MARKET BREADTH</span>'
-        f'<strong>{stats["up_ratio"]:.1f}<small>%</small></strong><span>当前范围 · 上涨占比</span></div>'
-        '<div class="cloud-breadth"><div class="cloud-bar">'
-        f'<i style="width:{stats["up"] / n * 100}%;background:var(--up)"></i>'
-        f'<i style="width:{stats["flat"] / n * 100}%;background:#495565"></i>'
-        f'<i style="width:{stats["down"] / n * 100}%;background:var(--down)"></i></div>'
-        f'<div class="cloud-counts"><span class="pos">上涨 {stats["up"]:,}</span>'
-        f'<span>平盘 {stats["flat"]:,}</span><span class="neg">下跌 {stats["down"]:,}</span></div></div>'
-        f'<div class="cloud-stat"><span>涨跌幅中位数</span><strong class="{"pos" if stats["median"] > 0 else "neg" if stats["median"] < 0 else ""}">{stats["median"]:+.2f}%</strong></div>'
-        f'<div class="cloud-stat"><span>成交总额</span><strong>{mm.format_amount(stats["amount"])}</strong></div></div>'
+        '<div class="cloud-side-summary">'
+        '<div class="cloud-eyebrow">MARKET BREADTH</div>'
+        f'<div class="cloud-side-title"><strong>市场全景</strong><span>{ut.esc(market)}</span></div>'
+        f'<div class="cloud-side-counts">{cells}</div>'
+        f'<div class="cloud-side-bar" aria-hidden="true">{bar}</div>'
+        f'<div class="cloud-side-meta">统计 {stats["count"]:,} 只 · '
+        f'{snapshot} {covered:,} / {meta["expected"]:,} 只</div>'
+        '</div>'
     )
 
 
-def render_market_map():
+def _select_industry(names):
+    st.session_state["cloud_sectors"] = list(names)
+
+
+def _select_subindustry(key):
+    name = st.session_state.get(key)
+    if name:
+        _select_industry([name])
+
+
+def _reset_industry():
+    st.session_state["cloud_sectors"] = []
+    st.session_state["cloud_industry_search"] = ""
+    st.session_state["_cloud_zoom_reset"] = st.session_state.get("_cloud_zoom_reset", 0) + 1
+
+
+def _industry_label(item, include_count=False):
+    name, change = item["name"], item["change"]
+    color = "red" if change > 0 else "green" if change < 0 else "gray"
+    safe_name = re.sub(r"([\\*_\[\]<>\x60])", r"\\\1", name)
+    count = f' :gray[{item["count"]:,} 只]' if include_count else ""
+    return f"**{safe_name}** :{color}[{change:+.2f}%]{count}"
+
+
+def _render_market_sidebar(sidebar, quotes, meta, market, exclude_st, min_cap, sectors, stale):
+    # 行业导航不应用个股搜索、涨跌筛选和行业选择，避免定位后丢失其他行业。
+    universe = mm.filter_quotes(quotes, market=market, exclude_st=exclude_st, min_cap=min_cap)
+    directory = mm.sector_tree(universe)
+    by_parent = {}
+    for name in quotes["行业"].unique():
+        by_parent.setdefault(industry_parent(name), []).append(name)
+    with sidebar:
+        st.markdown(_sidebar_summary(mm.market_stats(universe), market, len(quotes), meta, stale),
+                    unsafe_allow_html=True)
+        st.markdown('<div class="cloud-side-title cloud-side-heading"><strong>行业导航</strong>'
+                    '<span>申万分级 · 市值加权</span></div>', unsafe_allow_html=True)
+        query = st.text_input("搜索行业", placeholder="搜索一级 / 二级行业", key="cloud_industry_search",
+                              label_visibility="collapsed", icon=":material/search:").strip().casefold()
+        sort, reset = st.columns([1.55, 1])
+        order = sort.selectbox("行业排序", ["市值优先", "涨幅优先", "跌幅优先"],
+                               label_visibility="collapsed", key="cloud_industry_sort")
+        reset.button("看全部", key="cloud_industry_reset", width="stretch", on_click=_reset_industry)
+        visible = []
+        for group in directory:
+            matches_parent = query in group["name"].casefold()
+            children = [item for item in group["children"] if item["name"] != group["name"]
+                        and (matches_parent or query in item["name"].casefold())]
+            if matches_parent or children:
+                visible.append((group, children))
+        if order != "市值优先":
+            ascending = order == "跌幅优先"
+            visible.sort(key=lambda item: item[0]["change"], reverse=not ascending)
+            for _, children in visible:
+                children.sort(key=lambda item: item["change"], reverse=not ascending)
+        visible.sort(key=lambda item: item[0]["name"] in (UNCLASSIFIED_INDUSTRY, UNMAPPED_INDUSTRY))
+        st.markdown(f'<div class="cloud-side-meta">显示 {len(visible)} / {len(directory)} 组'
+                    ' · 展开查看二级行业</div>', unsafe_allow_html=True)
+        if not visible:
+            st.caption("当前范围暂无匹配行业。")
+            return
+
+        with st.container(height=400 if len(visible) > 8 else "content", border=False, key="cloud_industry_list"):
+            for group, children in visible:
+                parent = group["name"]
+                members = by_parent[parent]
+                expanded = bool(query) or any(name in sectors for name in members)
+                # 搜索使用单独的展开状态，避免沿用目录中的收起状态。
+                with st.expander(_industry_label(group, include_count=True), expanded=expanded,
+                                 key=f"cloud_l1_{parent}_{hash(query)}"):
+                    st.button("查看该组全部成分股", key=f"cloud_focus_{parent}", width="stretch",
+                              on_click=_select_industry, args=(members,))
+                    if children:
+                        st.caption("原始分类" if parent == UNMAPPED_INDUSTRY else "二级行业")
+                        by_name = {item["name"]: item for item in children}
+                        key = f"cloud_l2_{parent}"
+                        active = sectors[0] if len(sectors) == 1 and sectors[0] in by_name else None
+                        if st.session_state.get(key) != active:
+                            st.session_state[key] = active
+                        st.radio("选择细分行业", list(by_name), index=None,
+                                 format_func=lambda name, items=by_name: _industry_label(items[name]),
+                                 captions=[f'{item["count"]:,} 只' for item in children],
+                                 width="stretch", label_visibility="collapsed", key=key,
+                                 on_change=_select_subindustry, args=(key,))
+
+
+def render_market_map(sidebar=None):
+    if sidebar is None:
+        sidebar = st.sidebar.container(key="cloud_sidebar")
     st.markdown(
         '<div class="cloud-heading"><div><div class="cloud-eyebrow">A-SHARE MARKET MAP</div>'
         '<div class="cloud-title" role="heading" aria-level="1">股票云图<span>一眼看清，市场全貌。</span></div></div>'
@@ -205,6 +298,8 @@ def render_market_map():
     except Exception:
         previous = st.session_state.get("_cloud_last_good")
         if not previous:
+            sidebar.markdown("**市场全景**")
+            sidebar.caption("等待行情快照")
             st.warning("暂时无法连接行情源，请稍后点击「刷新行情」重试。")
             return
         quotes, meta = previous
@@ -222,31 +317,35 @@ def render_market_map():
         c1, c2, c3, c4 = st.columns([1.15, 2, 1, .9])
         area = c1.selectbox("方块面积", mm.AREA_FIELDS, key="cloud_area")
         sector_options = sorted(quotes["行业"].unique().tolist())
-        st.session_state["cloud_sectors"] = [s for s in st.session_state.get("cloud_sectors", []) if s in sector_options]
+        selected = st.session_state.get("cloud_sectors", [])
+        if "银行Ⅱ" in selected:
+            selected = [*selected, *(s for s in sector_options if industry_parent(s) == "银行")]
+        st.session_state["cloud_sectors"] = [s for s in dict.fromkeys(selected) if s in sector_options]
         sectors = c2.multiselect("行业筛选", sector_options, key="cloud_sectors", placeholder="全部行业")
         direction = c3.selectbox("涨跌筛选", ("全部", "仅上涨", "仅下跌"), key="cloud_direction")
         exclude_st = c4.checkbox("剔除 ST / 退市", value=True, key="cloud_exclude_st")
 
+    _render_market_sidebar(sidebar, quotes, meta, market, exclude_st, min_cap, sectors, stale)
     filtered = mm.filter_quotes(quotes, market, sectors, query, exclude_st, direction, min_cap)
     if filtered.empty:
         st.info("没有符合条件的股票，请调整市场、行业或搜索条件。")
         return
     stats = mm.market_stats(filtered)
     groups, omitted = mm.map_payload(filtered, area)
-    st.markdown(_summary(stats), unsafe_allow_html=True)
-    covered = int((quotes["行业"] != "未分类").sum())
+    covered = int((quotes["行业"] != UNCLASSIFIED_INDUSTRY).sum())
     fetched = meta["fetched_at"].replace("T", " ").replace("+08:00", "")
     st.markdown(
         f'<div class="cloud-meta"><span>显示 <b>{stats["count"] - omitted:,}</b> / {len(quotes):,} 只有效行情'
-        f' <em>面积：{ut.esc(area)} · 颜色：当日涨跌幅</em></span>'
+        f' <em>涨跌中位数 {stats["median"]:+.2f}% · 成交 {mm.format_amount(stats["amount"])}'
+        f' · 面积 {ut.esc(area)}</em></span>'
         f'<span>{ut.esc(meta["source"])} · 获取于 {ut.esc(fetched)} 北京时间</span></div>',
         unsafe_allow_html=True)
     if omitted:
         st.caption(f"{omitted} 只股票的{area}缺失或为零，未参与面积绘制；上方统计仍包含这些股票。可切换「等权」查看。")
 
     _render_map_display(groups, filtered, quotes, meta, height, fit_window, str(time.monotonic_ns()))
-    st.caption(f"数据口径：最新可得快照，非逐笔行情；休市期间展示行情源最近返回值。"
-               f"行业采用{industry_source}，已覆盖 {covered:,} / {len(quotes):,} 只，其余归入「未分类」；无有效报价的股票不参与统计。")
+    st.caption(f"休市期间显示行情源最近返回的快照。行业层级按申万分类整理，"
+               f"成分归属基于{industry_source}，覆盖 {covered:,} / {len(quotes):,} 只。")
 
 
 @st.fragment
@@ -254,7 +353,8 @@ def _render_map_display(groups, filtered, quotes, meta, height, fit_window, view
     # 悬停查询只更新云图区域，沿用当前市场快照。
     preview = _handle_preview_event(st.session_state.get("market_cloud"), filtered, quotes, meta)
     _cloud(groups=groups, height=height, auto_height=fit_window, selected=st.session_state.get("_cloud_selected"),
-           view_id=view_id, preview=preview, key="market_cloud", default=None)
+           view_id=view_id, preview=preview, zoom_reset=st.session_state.get("_cloud_zoom_reset", 0),
+           key="market_cloud", default=None)
 
     swatches = [("≤ −5%", "#25b083"), ("−3%", "#229a75"), ("−1%", "#25836a"),
                 ("−0.5%", "#286c5c"), ("0%", "#3b4756"), ("+0.5%", "#95414d"),

@@ -387,3 +387,100 @@ def candidates_text(res: dict, limit: int = 40) -> str:
             else f"{r[c]}" for c in cols))
     lines.append(f"（共扫描 {res['n_total']} 只非ST个股，" + res["note"] + "）")
     return "\n".join(lines)
+
+
+def latest_scan_date(calendar: pd.DataFrame, now: pd.Timestamp) -> str:
+    """取最近已开盘的交易日，供按日期查询的涨停与强势股池使用。"""
+    dates = pd.to_datetime(calendar["trade_date"], errors="coerce").dropna()
+    cutoff = now.date()
+    if (now.hour, now.minute) < (9, 30):
+        cutoff -= pd.Timedelta(days=1)
+    previous = dates[dates <= pd.Timestamp(cutoff)]
+    if previous.empty:
+        raise ValueError("交易日历缺少可用日期")
+    return previous.max().strftime("%Y%m%d")
+
+
+def fetch_strategy_data(kind: str, trade_date: str = "") -> pd.DataFrame:
+    """使用单个专题接口，限制扫描的等待时间。"""
+    import akshare as ak
+
+    if kind == "calendar":
+        df = _call_with_timeout(ak.tool_trade_date_hist_sina, 8)
+    elif kind == "limit":
+        df = _call_with_timeout(lambda: ak.stock_zt_pool_em(date=trade_date), 8)
+    elif kind == "strong":
+        df = _call_with_timeout(lambda: ak.stock_zt_pool_strong_em(date=trade_date), 8)
+    else:
+        indicator = {"industry": "新浪行业", "concept": "概念"}[kind]
+        df = _call_with_timeout(lambda: ak.stock_sector_spot(indicator=indicator), 8)
+    if df is None or (kind in {"calendar", "industry", "concept"} and df.empty):
+        raise RuntimeError("专题数据源暂时不可用")
+    return df
+
+
+def _stock_codes(values: pd.Series) -> pd.Series:
+    return (values.astype("string").str.strip().str.lower()
+            .str.replace(r"^(sh|sz|bj)", "", regex=True)
+            .str.replace(r"\.0$", "", regex=True).str.zfill(6))
+
+
+def _strategy_stocks(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df["代码"] = _stock_codes(df["代码"])
+    df["名称"] = df["名称"].fillna("").astype(str).str.strip()
+    eligible = (df["代码"].str.fullmatch(r"(?:60|68|00|30)\d{4}", na=False)
+                & df["名称"].ne("") & ~df["名称"].map(_excluded_name))
+    return df.loc[eligible].copy()
+
+
+def limit_up_candidates(df: pd.DataFrame) -> pd.DataFrame:
+    """涨停池按连板、炸板次数、首次封板时间排序。"""
+    cols = ["代码", "名称", "所属行业", "涨跌幅", "连板数", "首次封板时间",
+            "最后封板时间", "炸板次数", "封板资金", "成交额"]
+    if df.empty:
+        return pd.DataFrame(columns=[*cols, "封板资金(亿)", "成交额(亿)"])
+    rows = _strategy_stocks(df[cols])
+    for col in ("涨跌幅", "连板数", "炸板次数", "封板资金", "成交额"):
+        rows[col] = pd.to_numeric(rows[col], errors="coerce")
+    for col in ("首次封板时间", "最后封板时间"):
+        times = rows[col].astype(str).str.replace(":", "", regex=False).str.zfill(6)
+        rows[col] = times.str.replace(r"^(\d{2})(\d{2})(\d{2})$", r"\1:\2:\3", regex=True)
+        rows[col] = rows[col].where(times.str.fullmatch(r"\d{6}") & times.ne("000000"))
+    for col in ("封板资金", "成交额"):
+        rows[f"{col}(亿)"] = (rows.pop(col) / 1e8).round(2)
+    return rows.sort_values(["连板数", "炸板次数", "首次封板时间", "封板资金(亿)"],
+                            ascending=[False, True, True, False]).reset_index(drop=True)
+
+
+def strong_stock_candidates(df: pd.DataFrame) -> pd.DataFrame:
+    """强势股池中，10 个交易日内至少 2 次涨停的候选。"""
+    cols = ["代码", "名称", "所属行业", "涨跌幅", "换手率", "涨停统计", "是否新高", "成交额"]
+    if df.empty:
+        return pd.DataFrame()
+    rows = _strategy_stocks(df[cols])
+    counts = rows["涨停统计"].astype(str).str.extract(r"^\s*(\d+)\s*/\s*(\d+)\s*$")
+    days, hits = (pd.to_numeric(counts[col], errors="coerce") for col in counts)
+    rows = rows.loc[days.le(10) & hits.ge(2) & days.ge(hits)].copy()
+    rows["涨停频率(%)"] = (hits / days * 100).round(1)
+    rows["涨跌幅"] = pd.to_numeric(rows["涨跌幅"], errors="coerce")
+    rows["换手率"] = pd.to_numeric(rows["换手率"], errors="coerce")
+    rows["成交额(亿)"] = (pd.to_numeric(rows.pop("成交额"), errors="coerce") / 1e8).round(2)
+    return (rows.assign(_hits=hits)
+            .sort_values(["_hits", "涨停频率(%)", "涨跌幅", "成交额(亿)"], ascending=False)
+            .drop(columns="_hits").head(TOP_N).reset_index(drop=True))
+
+
+def rank_sector_boards(df: pd.DataFrame) -> pd.DataFrame:
+    """按涨跌幅排列行情源返回的全部板块，个股字段可为空。"""
+    rows = df.rename(columns={"涨跌幅": "板块涨跌幅(%)", "个股-涨跌幅": "涨跌幅",
+                              "股票代码": "代码", "股票名称": "名称"})
+    cols = ["板块", "板块涨跌幅(%)", "代码", "名称", "涨跌幅"]
+    rows = rows[cols].copy()
+    codes = _stock_codes(rows["代码"])
+    rows["代码"] = codes.where(codes.str.fullmatch(r"(?:00|30|60|68|43|83|87|88|92)\d{4}", na=False)
+                              & codes.ne("000000"))
+    rows["名称"] = rows["名称"].astype("string").str.strip().replace(["", "-", "--"], pd.NA)
+    for col in ("板块涨跌幅(%)", "涨跌幅"):
+        rows[col] = pd.to_numeric(rows[col], errors="coerce")
+    return rows.sort_values(["板块涨跌幅(%)", "涨跌幅"], ascending=False, ignore_index=True)

@@ -1,4 +1,4 @@
-"""技术分析页：总览 / 多周期对比 / 基本面 / 历史回测 / AI 解读 五个子页。"""
+"""研究工作台的个股技术面、基本面与 AI 研究模块。"""
 import json
 import pandas as pd
 import streamlit as st
@@ -24,6 +24,7 @@ from astock.analysis.report import BULL, BEAR
 from astock.analysis import shortterm
 from views.sidebar import render_skill_editor
 from views.search_progress import progress_text
+from views.shortpage import render_stock_shortterm
 
 
 # ---------------------------------------------------------------- 小工具
@@ -759,7 +760,7 @@ def render_tech_panel(ai: dict, bundle: dict):
 
     views = {
         "overview": "综合概览", "multi": "多周期", "fundamental": "基本面",
-        "backtest": "策略回测", "assistant": "AI 研究助手",
+        "shortterm": "短线观察", "backtest": "策略回测", "assistant": "AI 研究助手",
     }
     st.session_state.setdefault("tech_view", "overview")
     view = st.segmented_control(
@@ -774,6 +775,8 @@ def render_tech_panel(ai: dict, bundle: dict):
                                   data_key)
     elif view == "fundamental":
         render_fundamentals_panel(code6, bundle["name"])
+    elif view == "shortterm":
+        render_stock_shortterm(bundle)
     elif view == "backtest":
         render_backtest_panel(df_all, data_key, bundle["name"])
     elif view == "assistant":

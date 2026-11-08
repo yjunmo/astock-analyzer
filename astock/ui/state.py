@@ -213,6 +213,33 @@ def force_spot_market_refresh(include_gex: bool = True):
     st.session_state.pop(f"spot_market_live_{int(bool(include_gex))}", None)
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def _scan_calendar() -> pd.DataFrame:
+    from astock.market.screener import fetch_strategy_data
+
+    return fetch_strategy_data("calendar")
+
+
+@st.cache_data(ttl=90, max_entries=8, show_spinner=False)
+def _scan_snapshot(kind: str, trade_date: str) -> tuple:
+    from astock.market import screener
+
+    rank = {"limit": screener.limit_up_candidates, "strong": screener.strong_stock_candidates,
+            "industry": screener.rank_sector_boards, "concept": screener.rank_sector_boards}
+    rows = rank[kind](screener.fetch_strategy_data(kind, trade_date))
+    return rows, trade_date, pd.Timestamp.now(tz=dtf.CN_TZ).strftime("%m-%d %H:%M:%S")
+
+
+def load_short_scan(kind: str) -> tuple:
+    """仅在扫描按钮触发时读取专题快照，同数据源短时间内复用。"""
+    from astock.market.screener import latest_scan_date
+
+    trade_date = ""
+    if kind in ("limit", "strong"):
+        trade_date = latest_scan_date(_scan_calendar(), pd.Timestamp.now(tz=dtf.CN_TZ))
+    return _scan_snapshot(kind, trade_date)
+
+
 def load_market_ctx(code6: str, name: str) -> str:
     """市场环境快照；失败降级为提示文本，不阻断分析。"""
     if not code6:

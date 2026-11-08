@@ -85,6 +85,25 @@ class TestMarketMap(unittest.TestCase):
         frame["总市值"] = 0
         self.assertAlmostEqual(mm.sector_stats(frame)[0]["change"], .5)
 
+    def test_sector_tree_weights_parents_and_preserves_verified_subindustries(self):
+        frame = mm.normalize_quotes(sample_quotes(), {
+            "600519": "房地产开发", "000001": "房地产服务", "300750": "半导体", "688001": "人工智能",
+        })
+        tree = {item["name"]: item for item in mm.sector_tree(frame)}
+        self.assertAlmostEqual(tree["房地产"]["change"], 1)
+        self.assertEqual(tree["房地产"]["count"], 2)
+        self.assertEqual([(child["name"], child["change"]) for child in tree["房地产"]["children"]],
+                         [("房地产开发", 2), ("房地产服务", -1)])
+        self.assertEqual(tree["电子"]["children"][0]["name"], "半导体")
+        self.assertEqual(tree["其他来源分类"]["children"][0]["name"], "人工智能")
+
+    def test_bank_subdivision_uses_membership_and_keeps_unknown_banks_in_parent(self):
+        frame = mm.normalize_quotes(sample_quotes(), {"000001": "银行Ⅱ", "920001": "银行Ⅱ"})
+        bank = next(group for group in mm.sector_tree(frame) if group["name"] == "银行")
+        self.assertEqual(bank["count"], 2)
+        self.assertEqual([child["name"] for child in bank["children"]],
+                         ["股份制银行Ⅱ", "银行（待细分）"])
+
     def test_fetch_handles_partial_pages_and_converts_cap_units(self):
         def get(url, params=None):
             if url.endswith("getHQNodeStockCount"):
@@ -197,11 +216,31 @@ class TestMarketMapView(unittest.TestCase):
 
         meta = {"source": "测试行情", "expected": 5, "failed_pages": 0,
                 "fetched_at": "2026-11-07T10:00:00+08:00"}
+        industries = {"600519": "房地产开发", "000001": "房地产服务", "300750": "电池"}
         with patch.object(page, "_load_quotes", return_value=(sample_quotes(), meta)), \
-             patch.object(page, "_load_industries", return_value=({"600519": "食品饮料"}, "测试分类")):
+             patch.object(page, "_load_industries", return_value=(industries, "测试分类")):
             app = AppTest.from_string("from views.market_map_page import render_market_map\nrender_market_map()")
             app.run(timeout=10)
             self.assertFalse(app.exception)
+            self.assertTrue(any("行情覆盖 5 / 5 只" in element.value for element in app.sidebar.markdown))
+            app.sidebar.selectbox(key="cloud_industry_sort").select("跌幅优先").run()
+            parent_labels = [element.label for element in app.sidebar.get("expander")]
+            self.assertIn("电力设备", parent_labels[0])
+            self.assertIn("房地产** :red[+1.00%]", parent_labels[1])
+            self.assertFalse(any("房地产开发" in label for label in parent_labels))
+            app.sidebar.button(key="cloud_focus_房地产").click().run()
+            self.assertEqual(set(app.multiselect(key="cloud_sectors").value), {"房地产开发", "房地产服务"})
+            app.sidebar.radio(key="cloud_l2_房地产").set_value("房地产服务").run()
+            self.assertEqual(app.multiselect(key="cloud_sectors").value, ["房地产服务"])
+            self.assertEqual(app.selectbox(key="cloud_pick").options, ["平安银行 · 000001"])
+            app.sidebar.text_input(key="cloud_industry_search").set_value("房地产开发").run()
+            options = app.sidebar.radio(key="cloud_l2_房地产").options
+            self.assertEqual(len(options), 1)
+            self.assertIn("房地产开发", options[0])
+            self.assertEqual(app.multiselect(key="cloud_sectors").value, ["房地产服务"])
+            app.sidebar.button(key="cloud_industry_reset").click().run()
+            self.assertEqual(app.multiselect(key="cloud_sectors").value, [])
+            self.assertEqual(app.sidebar.text_input(key="cloud_industry_search").value, "")
             app.selectbox(key="cloud_area").select("等权").run()
             self.assertFalse(app.exception)
             app.selectbox(key="cloud_pick").select("600519").run()

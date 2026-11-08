@@ -1,6 +1,6 @@
 akshare>=1.18
 plotly>=6.0
-streamlit>=1.46
+streamlit>=1.63
 pandas>=2.2
 requests>=2.31
 ddgs>=9.0

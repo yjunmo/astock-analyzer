@@ -11,6 +11,12 @@ import pandas as pd
 import requests
 
 from astock.market import data_fetcher as dtf
+from astock.market.industry_taxonomy import (
+    BANK_SUBINDUSTRIES,
+    UNCLASSIFIED_INDUSTRY,
+    UNRESOLVED_BANK,
+    industry_parent,
+)
 
 CN_TZ = ZoneInfo("Asia/Shanghai")
 API = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
@@ -180,8 +186,10 @@ def normalize_quotes(frame, industries=None):
     if industries is not None:
         df["行业"] = df["代码"].map(industries)
     elif "行业" not in df:
-        df["行业"] = "未分类"
-    df["行业"] = df["行业"].fillna("未分类").replace("", "未分类")
+        df["行业"] = UNCLASSIFIED_INDUSTRY
+    df["行业"] = df["行业"].fillna(UNCLASSIFIED_INDUSTRY).replace("", UNCLASSIFIED_INDUSTRY)
+    bank = df["行业"].eq("银行Ⅱ")
+    df.loc[bank, "行业"] = df.loc[bank, "代码"].map(BANK_SUBINDUSTRIES).fillna(UNRESOLVED_BANK)
     if "行情时间" not in df:
         df["行情时间"] = ""
     return df.drop_duplicates("代码", keep="last").reset_index(drop=True)[columns]
@@ -219,10 +227,10 @@ def market_stats(frame):
             "amount": float(frame["成交额"].sum())}
 
 
-def sector_stats(frame):
+def sector_stats(frame, by="行业"):
     if frame.empty:
         return []
-    grouped = frame.groupby("行业", sort=False)
+    grouped = frame.groupby(by, sort=False)
     result = []
     for name, group in grouped:
         caps = group["总市值"].clip(lower=0).fillna(0)
@@ -230,6 +238,15 @@ def sector_stats(frame):
         change = float((group["涨跌幅"] * caps).sum() / total) if total else float(group["涨跌幅"].mean())
         result.append({"name": name, "change": change, "count": len(group), "cap": total})
     return sorted(result, key=lambda item: item["cap"], reverse=True)
+
+
+def sector_tree(frame):
+    """一级涨跌幅由全部成分股重新加权，二级保留各自独立的统计。"""
+    parents = frame["行业"].map(industry_parent)
+    by_parent = {}
+    for child in sector_stats(frame):
+        by_parent.setdefault(industry_parent(child["name"]), []).append(child)
+    return [{**parent, "children": by_parent[parent["name"]]} for parent in sector_stats(frame, parents)]
 
 
 def map_payload(frame, area="总市值"):

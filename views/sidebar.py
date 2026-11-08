@@ -7,8 +7,10 @@ from astock.ai import skill_store
 from astock.ai.ai_client import PROVIDERS, clear_local_config, load_local_config, save_local_config
 
 
-def render_sidebar():
-    with st.sidebar:
+def render_sidebar(compact: bool = False):
+    panel = (st.sidebar.popover("个股研究", icon=":material/manage_search:", width="stretch")
+             if compact else st.sidebar)
+    with panel:
         st.markdown('<div class="cloud-eyebrow">YOUR WORKSPACE</div>', unsafe_allow_html=True)
         st.markdown("### 个股研究")
         st.caption("从市场全景，深入一家公司")

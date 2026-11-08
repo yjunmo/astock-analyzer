@@ -122,20 +122,66 @@ div[data-testid="stSegmentedControl"] button {{
 .st-key-cloud_filters {{ background:var(--panel); border-radius:9px; }}
 .st-key-cloud_filters [data-testid="stWidgetLabel"] p {{ font-size:11px; color:var(--dim); }}
 .st-key-cloud_filters [data-testid="stCheckbox"] {{ padding-top:24px; }}
-.cloud-summary {{ display:flex; align-items:center; gap:32px; padding:18px 23px;
-  background:linear-gradient(105deg,#19231e,#141d22 65%); border:1px solid #2e3d36;
-  border-radius:10px; margin:2px 0 0; }}
-.cloud-overview {{ display:flex; flex-direction:column; gap:5px; min-width:126px; }}
-.cloud-overview strong {{ font-size:33px; line-height:1; font-weight:650; font-variant-numeric:tabular-nums; }}
-.cloud-overview small {{ font-size:17px; font-weight:450; margin-left:3px; }}
-.cloud-overview > span:last-child {{ font-size:11px; color:var(--dim); }}
-.cloud-breadth {{ flex:1; min-width:80px; }}
-.cloud-bar {{ display:flex; overflow:hidden; height:9px; border-radius:2px; gap:2px; }}
-.cloud-bar i {{ display:block; min-width:0; }}
-.cloud-counts {{ display:flex; gap:20px; margin-top:10px; color:var(--dim); font-size:11px; }}
-.cloud-stat {{ display:flex; flex-direction:column; gap:10px; padding-left:24px; border-left:1px solid #2b373b; }}
-.cloud-stat > span {{ font-size:11px; color:var(--dim); }}
-.cloud-stat strong {{ font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }}
+section[data-testid="stSidebar"]:has(.st-key-cloud_sidebar) > div {{ padding-top:0; }}
+section[data-testid="stSidebar"]:has(.st-key-cloud_sidebar) [data-testid="stSidebarHeader"] {{
+  padding:.45rem 1.15rem .2rem;
+}}
+section[data-testid="stSidebar"]:has(.st-key-cloud_sidebar) [data-testid="stSidebarUserContent"] {{
+  padding-top:.5rem;
+}}
+.st-key-cloud_sidebar [data-testid="stVerticalBlock"] {{ gap:.48rem; }}
+.cloud-side-summary {{
+  background:linear-gradient(140deg,#1b2821,#141d23 78%); border:1px solid #344239;
+  border-radius:9px; padding:12px; color:var(--text);
+}}
+.cloud-side-title {{ display:flex; justify-content:space-between; align-items:baseline; gap:5px;
+  margin-top:4px; font-size:15px; }}
+.cloud-side-title span {{ color:var(--dim); font-size:10px; text-align:right; }}
+.cloud-side-heading {{ border-top:1px solid var(--border); margin-top:3px; padding-top:10px; }}
+.cloud-side-counts {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:3px;
+  margin:12px 0 8px; font-variant-numeric:tabular-nums; }}
+.cloud-side-counts span, .cloud-side-meta {{ color:var(--dim); font-size:10px; line-height:1.4; }}
+.cloud-side-counts b {{ display:block; font-size:clamp(14px,1.5vw,19px); line-height:1.25; }}
+.cloud-side-counts .up {{ color:var(--up); }}
+.cloud-side-counts .down {{ color:var(--down); }}
+.cloud-side-counts .flat {{ color:var(--text); }}
+.cloud-side-bar {{ display:flex; overflow:hidden; height:4px; border-radius:8px;
+  background:var(--border); margin-bottom:6px; }}
+.cloud-side-bar i {{ flex-shrink:0; }}
+.st-key-cloud_sidebar button {{ min-height:34px; }}
+.st-key-cloud_sidebar [data-testid="stHorizontalBlock"] {{ flex-wrap:nowrap; gap:8px; }}
+.st-key-cloud_sidebar [data-testid="stColumn"] {{ min-width:0 !important; width:auto !important; flex:1 1 0 !important; }}
+.st-key-cloud_sidebar [data-testid="stColumn"]:first-child {{ flex-grow:1.55 !important; }}
+.st-key-cloud_industry_list [data-testid="stVerticalBlock"] {{ gap:.32rem; }}
+.st-key-cloud_industry_list details {{ border-color:var(--border); }}
+.st-key-cloud_industry_list summary {{ min-height:34px; padding:5px 6px; }}
+.st-key-cloud_industry_list summary [data-testid="stMarkdownContainer"] {{ flex:1; min-width:0; }}
+.st-key-cloud_industry_list summary p:has(> strong) {{
+  display:flex; align-items:baseline; gap:5px; margin:0; font-size:.81rem;
+  font-variant-numeric:tabular-nums;
+}}
+.st-key-cloud_industry_list summary p > strong {{ margin-right:auto; overflow-wrap:anywhere; }}
+.st-key-cloud_industry_list summary p > span {{ white-space:nowrap; }}
+.st-key-cloud_industry_list summary p > span:last-child {{ font-size:.67rem; }}
+.st-key-cloud_industry_list [role="radiogroup"] {{ align-items:stretch; gap:0; width:100%; }}
+.st-key-cloud_industry_list [role="radiogroup"] > div {{ width:100%; }}
+.st-key-cloud_industry_list label:is([data-testid="stRadioOption"],[data-baseweb="radio"]) {{
+  display:flex; align-items:center; width:100%; margin:0; padding:5px 8px 3px 3px;
+  border-top:1px solid var(--border); border-radius:4px; cursor:pointer;
+}}
+.st-key-cloud_industry_list label:is([data-testid="stRadioOption"],[data-baseweb="radio"]):hover {{ background:var(--panel2); }}
+.st-key-cloud_industry_list label:is([data-testid="stRadioOption"],[data-baseweb="radio"]):has(input:checked) {{
+  background:#243329; border-color:#475b42;
+}}
+.st-key-cloud_industry_list label > div:last-child,
+.st-key-cloud_industry_list label [data-testid="stMarkdownContainer"] {{ flex:1; min-width:0; }}
+.st-key-cloud_industry_list label [data-testid="stMarkdownContainer"] p:has(> strong) {{
+  display:flex; justify-content:space-between; gap:6px; align-items:baseline; margin:0;
+  font-size:.80rem; font-variant-numeric:tabular-nums;
+}}
+.st-key-cloud_industry_list label p > strong {{ overflow-wrap:anywhere; }}
+.st-key-cloud_industry_list label p > span {{ flex-shrink:0; }}
+.st-key-cloud_industry_list [data-testid="stCaptionContainer"] p {{ font-size:.67rem; line-height:1.25; }}
 .pos {{ color:var(--up); }} .neg {{ color:var(--down); }}
 .cloud-meta {{ display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;
   color:var(--dim); font-size:11px; margin:9px 0 0; }}
@@ -176,17 +222,6 @@ div[data-testid="stSegmentedControl"] button {{
 .st-key-cloud_filters [data-testid="stMultiSelect"] > div {{ flex:1; min-width:0; }}
 .st-key-cloud_filters [data-testid="stWidgetLabel"] p {{ white-space:nowrap; }}
 .st-key-cloud_filters [data-testid="stCheckbox"] {{ padding-top:0; min-height:32px; display:flex; align-items:center; }}
-.block-container:has(.cloud-heading) .cloud-summary {{ gap:20px; padding:8px 14px; border-radius:7px; margin:0; }}
-.cloud-overview .cloud-eyebrow {{ display:none; }}
-.cloud-overview {{ gap:3px; min-width:108px; }}
-.cloud-overview strong {{ font-size:26px; }}
-.cloud-overview small {{ font-size:14px; }}
-.cloud-overview > span:last-child {{ font-size:10px; line-height:1.3; }}
-.cloud-stat {{ gap:4px; padding-left:18px; }}
-.cloud-stat strong {{ font-size:17px; }}
-.cloud-stat > span {{ font-size:10px; }}
-.cloud-bar {{ height:7px; }}
-.cloud-counts {{ margin-top:6px; gap:14px; font-size:10px; }}
 .cloud-meta {{ font-size:10px; line-height:1.4; margin:0; gap:4px; }}
 .empty-hero {{ border:1px solid var(--border); border-radius:18px; overflow:hidden;
   background:radial-gradient(circle at 85% 15%,rgba(88,166,255,.16),transparent 32%),
@@ -411,14 +446,8 @@ div[data-testid="stSegmentedControl"] button {{
   .feature-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
   .empty-hero {{ padding:24px 20px; }}
   .cloud-title > span, .cloud-session, .brand-tag {{ display:none; }}
-  .cloud-summary {{ flex-wrap:wrap; gap:18px; padding:16px; }}
-  .cloud-breadth {{ min-width:150px; }}
-  .cloud-stat {{ padding-left:0; border:0; flex:1; }}
-  .cloud-counts {{ gap:10px; }}
   .cloud-meta em {{ display:block; margin:5px 0 0; }}
   .block-container:has(.cloud-heading) {{ padding:.65rem .8rem 1rem; }}
-  .block-container:has(.cloud-heading) .cloud-summary {{ gap:12px; }}
-  .cloud-stat {{ padding-left:0; }}
 }}
 @media (max-width: 640px) {{
   .st-key-cloud_market [role="radiogroup"] {{ flex-wrap:wrap; overflow:visible; gap:3px; }}

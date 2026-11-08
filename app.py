@@ -176,9 +176,17 @@ def main():
     if pending_tech:
         st.session_state["tech_view"] = pending_tech
 
-    code, period, adjust, n_bars, run = render_sidebar()
+    cloud_page = ((st.session_state.get("main_nav") or "market_map") == "market_map"
+                  and not st.session_state.get("_pending_run"))
+    cloud_sidebar = st.sidebar.container(key="cloud_sidebar") if cloud_page else None
+    code, period, adjust, n_bars, run = render_sidebar(compact=cloud_page)
     ai = render_ai_settings()
     render_search_settings()
+
+    if cloud_page and (run or st.session_state.get("_pending_run")):
+        st.session_state["_pending_run"] = True
+        st.session_state["_pending_page"] = "analysis"
+        st.rerun()
 
     st.markdown(ut.brand_header(), unsafe_allow_html=True)
     if run or st.session_state.get("_pending_run"):
@@ -196,7 +204,7 @@ def main():
     load_failed = False
 
     code_str = str(code or "").strip()
-    if page not in ("analysis", "news", "library", "screener"):
+    if page not in ("analysis", "news", "library"):
         pass  # 全市场页面独立加载，避免切页时触发个股行情和报告计算。
     elif not (len(code_str) == 6 and code_str.isdigit()):
         stock_info = ("请在左侧输入6位股票代码（如 600519 / 000001），或点击快捷按钮。"
@@ -229,9 +237,9 @@ def main():
         _render_report_actions(bundle)
 
     # 使用显式路由而非 st.tabs：Streamlit 的 tabs 会把隐藏页也执行一遍，
-    # 这里确保基本面、全市场扫描和新闻抓取只在用户真正进入时运行。
+    # 各模块按需加载，短线扫描页独立于个股研究。
     if page == "market_map":
-        render_market_map()
+        render_market_map(cloud_sidebar)
     elif page == "analysis":
         if bundle:
             render_tech_panel(ai, bundle)
@@ -244,7 +252,7 @@ def main():
             if stock_info and code_str:
                 st.info(stock_info)
     elif page == "screener":
-        render_short_page(ai, bundle)
+        render_short_page(ai)
     elif page == "news":
         if bundle:
             render_news_intel(ai, code6=bundle["symbol"][2:], name=bundle["name"])

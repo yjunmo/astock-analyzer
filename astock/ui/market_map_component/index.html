@@ -151,6 +151,7 @@ window.addEventListener('message', event => {
  if (event.source !== window.parent || event.data?.type !== 'streamlit:render') return;
  const next = event.data.args;
  const redraw = next.view_id !== args.view_id || next.height !== args.height || next.auto_height !== args.auto_height;
+ if (next.zoom_reset !== args.zoom_reset) zoom = null;
  args = next;
  selected = args.selected || null;
  host.classList.toggle('disabled', !!event.data.disabled);
